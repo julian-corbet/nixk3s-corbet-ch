@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+
+  <title>nixk3s &mdash; declarative k3s: the host is a flake, the cluster is git</title>
+  <meta name="description" content="Bare-metal k3s on NixOS with a fully declarative GitOps spine: nixidy renders typed Nix to plain manifests, Argo CD reconciles with prune + self-heal. Pre-alpha.">
+
+  <meta name="theme-color" content="#0b1120" media="(prefers-color-scheme: dark)">
+  <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
+
+  <meta property="og:title" content="nixk3s">
+  <meta property="og:description" content="Bare-metal k3s on NixOS with a declarative nixidy + Argo CD GitOps spine.">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://nixk3s.corbet.ch">
+  <meta name="twitter:card" content="summary">
+
+  <link rel="stylesheet" href="https://v1.foss.design.corbet.ch/assets/base.css">
+  <link rel="stylesheet" href="./theme.css">
+</head>
+<body>
+
+<header class="hero">
+  <nav>
+    <a href="/" class="nav-brand">nixk3s</a>
+    <div class="nav-links">
+      <a href="https://github.com/julian-corbet/nixk3s-corbet-ch">GitHub</a>
+      <a href="#how">How</a>
+      <a href="#status">Status</a>
+    </div>
+  </nav>
+
+  <div class="hero-content">
+    <h1>nixk3s</h1>
+    <p class="tagline">The host is a flake, the cluster is git</p>
+    <p class="subtitle">Bare-metal k3s on NixOS with a fully declarative
+    GitOps spine: nixidy renders typed Nix modules to a plain manifest tree,
+    Argo CD reconciles it with prune + self-heal. No hand-applied YAML, no
+    drift.</p>
+  </div>
+</header>
+
+<main>
+  <section id="how">
+    <h2>One coherent answer</h2>
+    <ul>
+      <li><strong>The host is a flake.</strong> k3s server config, node
+        labels, storage paths — all NixOS options, all reproducible.</li>
+      <li><strong>Workloads are Nix too.</strong> nixidy renders to plain
+        manifests you can read, diff, and audit; Argo CD keeps the cluster
+        equal to git.</li>
+      <li><strong>Airgapped images.</strong> Custom images imported
+        declaratively on the host — no registry required for
+        cluster-internal pieces.</li>
+      <li><strong>Tenancy by AppProject.</strong> What <em>manages</em> the
+        cluster is separated from what <em>runs on</em> it.</li>
+    </ul>
+  </section>
+
+  <section id="status">
+    <h2>Status</h2>
+    <p><strong>Pre-alpha.</strong> The spine runs a production single-node
+    cluster (15+ Argo applications, GPU workloads) and has survived node
+    rebuilds and a bare-metal migration. The generalized modules have not
+    been extracted yet.</p>
+  </section>
+
+  <section id="family">
+    <h2>Interoperating set</h2>
+    <p>nixk3s is the ground the siblings stand on:
+    <a href="https://nixgpu.corbet.ch">nixgpu</a> shares one GPU by priority
+    on this spine; <a href="https://nixapps.corbet.ch">nixapps</a> is the
+    curated app library that deploys onto it.</p>
+  </section>
+</main>
+
+<footer>
+  <p><a href="https://github.com/julian-corbet/nixk3s-corbet-ch">GitHub</a>
+  &middot; MIT License &copy; 2026 Julian Corbet</p>
+</footer>
+
+</body>
+</html>

@@ -1,0 +1,31 @@
+/* nixk3s theme — overrides only the accent of the foss v1 base.
+   Retints the central design system accent to a kubernetes-adjacent blue,
+   distinct from the other project-family pages.
+
+   Contrast checked against WCAG AA (4.5:1) for both directions:
+     dark:  #60a5fa accent text on #0b1120 bg          -> ~7.4:1
+     dark:  #0b1120 accent-text on #60a5fa button bg   -> ~7.4:1
+     light: #1d4ed8 accent text on #ffffff bg          -> ~6.3:1
+     light: #ffffff accent-text on #1d4ed8 button bg   -> ~6.3:1
+*/
+
+:root {
+  /* Dark mode (and default) accent - cluster blue. */
+  --accent: #60a5fa;
+  --accent-hover: #93c5fd;
+  --accent-dim: rgba(96, 165, 250, 0.12);
+  --accent-glow: rgba(96, 165, 250, 0.08);
+  --accent-text: #0b1120;
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    /* Deeper blue for light mode - keeps text-on-white contrast at
+       WCAG AA (#1d4ed8 on #ffffff ~= 6.3:1). */
+    --accent: #1d4ed8;
+    --accent-hover: #1e40af;
+    --accent-dim: rgba(29, 78, 216, 0.08);
+    --accent-glow: rgba(29, 78, 216, 0.06);
+    --accent-text: #ffffff;
+  }
+}
