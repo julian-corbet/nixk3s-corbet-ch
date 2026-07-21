@@ -4,8 +4,8 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
 
-  <title>nixk3s &mdash; declarative k3s: the host is a flake, the cluster is git</title>
-  <meta name="description" content="Bare-metal k3s on NixOS with a fully declarative GitOps spine: nixidy renders typed Nix to plain manifests, Argo CD reconciles with prune + self-heal. Pre-alpha.">
+  <title>nixk3s &mdash; the host is a flake, the cluster is git</title>
+  <meta name="description" content="Bare-metal k3s on NixOS with a fully declarative GitOps spine: nixidy renders typed Nix to plain manifests, Argo CD reconciles with prune + self-heal. Pre-alpha; modules landing now.">
 
   <meta name="theme-color" content="#0b1120" media="(prefers-color-scheme: dark)">
   <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
@@ -26,8 +26,8 @@
     <a href="/" class="nav-brand">nixk3s</a>
     <div class="nav-links">
       <a href="https://github.com/julian-corbet/nixk3s-corbet-ch">GitHub</a>
-      <a href="#how">How</a>
       <a href="#status">Status</a>
+      <a href="#modules">Modules</a>
     </div>
   </nav>
 
@@ -36,48 +36,127 @@
     <p class="tagline">The host is a flake, the cluster is git</p>
     <p class="subtitle">Bare-metal k3s on NixOS with a fully declarative
     GitOps spine: nixidy renders typed Nix modules to a plain manifest tree,
-    Argo CD reconciles it with prune + self-heal. No hand-applied YAML, no
-    drift.</p>
+    Argo CD reconciles it with prune and self-heal. No hand-applied YAML, no
+    helm-on-the-CLI, no drift.</p>
+    <div class="cta">
+      <a href="#status" class="btn btn-primary">Read the honest status</a>
+      <a href="https://github.com/julian-corbet/nixk3s-corbet-ch" class="btn btn-secondary">View on GitHub</a>
+    </div>
   </div>
 </header>
 
 <main>
-  <section id="how">
+
+<section id="status" class="how-it-works">
+  <div class="container">
+    <h2>Status: pre-alpha, spine is real</h2>
+    <div class="steps">
+      <div class="step">
+        <div class="step-num">!</div>
+        <h3>The spine is production-proven</h3>
+        <p>This is not a design on paper. It runs a production single-node
+        cluster today &mdash; 15+ Argo CD applications, GPU workloads, the
+        whole works &mdash; and has survived node rebuilds and a bare-metal
+        migration.</p>
+      </div>
+      <div class="step">
+        <div class="step-num">!</div>
+        <h3>Modules landing now</h3>
+        <p>The generalized, reusable modules (<code>k3s-host</code>,
+        <code>gitops-spine</code>, <code>tenancy</code>) are being extracted
+        from that production system in parallel with this page. None are
+        published to this repo yet &mdash; nothing here is a download link
+        to code that doesn't exist.</p>
+      </div>
+      <div class="step">
+        <div class="step-num">!</div>
+        <h3>No invented benchmarks or claims</h3>
+        <p>Everything below describes the mechanism as it actually runs in
+        production. Nothing is a projected number or a planned feature
+        dressed up as shipped.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="features">
+  <div class="container">
     <h2>One coherent answer</h2>
-    <ul>
-      <li><strong>The host is a flake.</strong> k3s server config, node
-        labels, storage paths — all NixOS options, all reproducible.</li>
-      <li><strong>Workloads are Nix too.</strong> nixidy renders to plain
-        manifests you can read, diff, and audit; Argo CD keeps the cluster
-        equal to git.</li>
-      <li><strong>Airgapped images.</strong> Custom images imported
-        declaratively on the host — no registry required for
-        cluster-internal pieces.</li>
-      <li><strong>Tenancy by AppProject.</strong> What <em>manages</em> the
-        cluster is separated from what <em>runs on</em> it.</li>
-    </ul>
-  </section>
+    <div class="feature-grid">
+      <div class="feature">
+        <h3>The host is a flake</h3>
+        <p>k3s server config, node labels, storage paths &mdash; all NixOS
+        options, all reproducible. No manual host setup, no configuration
+        drift between rebuilds.</p>
+      </div>
+      <div class="feature">
+        <h3>Workloads are Nix too</h3>
+        <p><a href="https://github.com/arnarg/nixidy">nixidy</a> renders typed
+        Nix modules to a plain manifest tree you can read, diff, and audit.
+        Argo CD (prune + selfHeal) reconciles the live cluster to exactly what
+        git says it should be.</p>
+      </div>
+      <div class="feature">
+        <h3>Airgapped images</h3>
+        <p>Custom images are imported declaratively on the host via
+        <code>services.k3s.images</code> &mdash; no registry required for
+        cluster-internal pieces.</p>
+      </div>
+      <div class="feature">
+        <h3>Tenancy by AppProject</h3>
+        <p>A small, opinionated project model separating the things that
+        <em>manage</em> the cluster from the things that <em>run on</em> it.</p>
+      </div>
+    </div>
+  </div>
+</section>
 
-  <section id="status">
-    <h2>Status</h2>
-    <p><strong>Pre-alpha.</strong> The spine runs a production single-node
-    cluster (15+ Argo applications, GPU workloads) and has survived node
-    rebuilds and a bare-metal migration. The generalized modules have not
-    been extracted yet.</p>
-  </section>
+<section id="modules" class="commands">
+  <div class="container">
+    <h2>Planned modules</h2>
+    <div class="table-scroll">
+      <table>
+        <tbody>
+          <tr><td><code>k3s-host</code></td><td>The NixOS side: k3s server with sane bare-metal defaults, declarative node labels, airgap image import, storage-path conventions. Landing now.</td></tr>
+          <tr><td><code>gitops-spine</code></td><td>The nixidy environment pattern plus Argo CD bootstrap: render &rarr; commit &rarr; sync, with the rendered tree excluded from the render trigger so it never loops. Landing now.</td></tr>
+          <tr><td><code>tenancy</code></td><td>The AppProject model and its allowed-destination conventions. Landing now.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
 
-  <section id="family">
-    <h2>Interoperating set</h2>
-    <p>nixk3s is the ground the siblings stand on:
-    <a href="https://nixgpu.corbet.ch">nixgpu</a> shares one GPU by priority
-    on this spine; <a href="https://nixapps.corbet.ch">nixapps</a> is the
-    curated app library that deploys onto it.</p>
-  </section>
+<section class="architecture">
+  <div class="container">
+    <h2>Related projects</h2>
+    <div class="arch-details">
+      <div class="arch-detail">
+        <h3>nixgpu</h3>
+        <p>Priority-based single-GPU sharing, built on this spine. See
+        <a href="https://nixgpu.corbet.ch">nixgpu.corbet.ch</a>.</p>
+      </div>
+      <div class="arch-detail">
+        <h3>nixapps</h3>
+        <p>Curated nixidy app modules that deploy onto this spine. See
+        <a href="https://nixapps.corbet.ch">nixapps.corbet.ch</a>.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
 </main>
 
 <footer>
-  <p><a href="https://github.com/julian-corbet/nixk3s-corbet-ch">GitHub</a>
-  &middot; MIT License &copy; 2026 Julian Corbet</p>
+  <div class="container">
+    <div class="footer-links">
+      <a href="https://github.com/julian-corbet/nixk3s-corbet-ch">Source</a>
+      <a href="https://github.com/julian-corbet/nixk3s-corbet-ch/issues">Issues</a>
+    </div>
+    <p>
+      <a href="https://github.com/julian-corbet/nixk3s-corbet-ch/blob/main/LICENSE">MIT</a> &middot;
+      <a href="https://github.com/julian-corbet">Julian Corbet</a>
+    </p>
+  </div>
 </footer>
 
 </body>
