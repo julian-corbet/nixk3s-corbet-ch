@@ -53,6 +53,8 @@ cluster.
   LLM serving lane running on that substrate.
 - [nixapps](https://github.com/julian-corbet/nixapps-corbet-ch) — curated
   nixidy app modules that deploy onto it.
+- [nixvibe](https://github.com/julian-corbet/nixvibe-corbet-ch) — a coding
+  agent in a real browser terminal, deployed onto this spine.
 
 ## License
 
