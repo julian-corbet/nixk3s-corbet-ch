@@ -25,27 +25,32 @@ production-lived answer:
 - **Tenancy by AppProject.** A small, opinionated project model separating
   the things that *manage* the cluster from the things that *run on* it.
 
-## Planned modules
+## What ships
 
-- **`k3s-host`** — the NixOS side: k3s server with sane bare-metal defaults,
-  declarative node labels, airgap image import, storage-path conventions.
-- **`gitops-spine`** — the nixidy environment pattern + Argo CD bootstrap:
-  render → commit → sync, with the rendered tree excluded from the render
-  trigger (no loops).
-- **`tenancy`** — the AppProject model and its allowed-destination
-  conventions.
+- **`k3s-host`** (`nixosModules.k3s-host`, landed) — the NixOS side: k3s
+  server with sane bare-metal defaults, declarative node labels, airgap image
+  import.
+- **`tenancy`** (`nixidyModules.tenancy`, landed) — the AppProject tenancy
+  model and its allowed-destination conventions.
+- **[docs/SPINE.md](docs/SPINE.md)** (landed) — the GitOps spine pattern:
+  nixidy render → commit → Argo CD sync, with the rendered tree excluded from
+  the render trigger (no loops).
 
 ## Status
 
-**Pre-alpha, extraction not started.** The spine is real: it runs a
-production single-node cluster (15+ Argo applications, GPU workloads, the
-whole works) and has survived node rebuilds and a bare-metal migration. This
-repo will carry the generalized modules; nothing has been extracted yet.
+**Pre-alpha, first modules landed.** The spine is real: it runs a production
+single-node cluster (15+ Argo applications, GPU workloads, the whole works)
+and has survived node rebuilds and a bare-metal migration. The generalized
+`k3s-host` and `tenancy` modules and the spine document are extracted; the
+generalized forms are render-checked but not yet re-verified on a live
+cluster.
 
 ## Related projects
 
 - [nixgpu](https://github.com/julian-corbet/nixgpu-corbet-ch) — priority-based
   single-GPU sharing built on this spine.
+- [nixllm](https://github.com/julian-corbet/nixllm-corbet-ch) — the shared
+  LLM serving lane running on that substrate.
 - [nixapps](https://github.com/julian-corbet/nixapps-corbet-ch) — curated
   nixidy app modules that deploy onto it.
 

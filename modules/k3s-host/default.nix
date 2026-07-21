@@ -7,7 +7,10 @@ let
     (name: value: "--node-label=${name}=${value}")
     cfg.nodeLabels;
 
-  disableFlags = map (c: "--disable=${c}") cfg.disableComponents;
+  # --disable is a k3s SERVER-only flag; on an agent node k3s doesn't
+  # recognize it at all, so only render it when this host is a server.
+  disableFlags = lib.optionals (cfg.role == "server")
+    (map (c: "--disable=${c}") cfg.disableComponents);
 in
 {
   options.nixk3s.host = {
@@ -29,6 +32,11 @@ in
       example = { "gpu" = "amd"; };
       description = ''
         Kubernetes node labels applied via `--node-label=<key>=<value>` flags.
+
+        The `"gpu" = "amd";` example is not an arbitrary placeholder: it is
+        the cross-project convention this label key/value follows so a node
+        matches the sibling GPU-sharing substrate's default nodeSelector out
+        of the box. See <https://nixgpu.corbet.ch>.
 
         **Operational lesson (must read before relying on this):** k3s only
         applies `--node-label` at *first node registration*. On a node that
@@ -71,6 +79,11 @@ in
         host that brings its own ingress, load-balancer, and storage
         provisioning through the GitOps spine instead of k3s's built-ins.
         Set to `[ ]` to keep everything k3s ships by default.
+
+        **Server-only.** `--disable` is a k3s server flag; it has no meaning
+        for an agent joining an existing control plane. This option is
+        rendered into flags only when `role = "server"` — on an agent node
+        it is silently ignored rather than passed through.
       '';
     };
 
@@ -92,9 +105,11 @@ in
     services.k3s.enable = lib.mkDefault true;
     services.k3s.role = cfg.role;
 
-    services.k3s.extraFlags = lib.mkDefault (
-      nodeLabelFlags ++ disableFlags ++ cfg.extraFlags
-    );
+    # Normal priority (not mkDefault): extraFlags is a list option, so a
+    # consumer setting services.k3s.extraFlags at normal priority merges
+    # with these rather than silently discarding the rendered node-label/
+    # disable flags — the exact silent-Pending footgun documented above.
+    services.k3s.extraFlags = nodeLabelFlags ++ disableFlags ++ cfg.extraFlags;
 
     services.k3s.images = lib.mkIf (cfg.airgapImages != [ ]) cfg.airgapImages;
   };

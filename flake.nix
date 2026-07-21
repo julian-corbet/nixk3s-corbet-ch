@@ -11,14 +11,15 @@
       forAllSystems = f: nixpkgs.lib.genAttrs systems f;
     in
     {
-      # Extraction in progress: this repo is being pulled out of a private
-      # production configuration. Planned module attrset, in extraction order:
-      #
-      #   nixosModules.k3s-host        - k3s server, node labels, airgap images, storage conventions
-      #   kubernetesModules.gitops-spine - nixidy env pattern + Argo CD bootstrap (render -> sync)
-      #   kubernetesModules.tenancy    - the AppProject tenancy model
-      nixosModules = { };
-      kubernetesModules = { };
+      # Extracted from a production single-node cluster; generalized forms not
+      # yet re-verified live. The GitOps spine itself (render -> commit -> sync)
+      # is documented in docs/SPINE.md.
+      nixosModules = {
+        k3s-host = ./modules/k3s-host;
+      };
+      nixidyModules = {
+        tenancy = ./modules/tenancy;
+      };
 
       lib = { };
 

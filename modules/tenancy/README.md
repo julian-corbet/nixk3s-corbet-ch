@@ -63,6 +63,22 @@ fine sync" failure modes without a matching security win when there's only
 one operator. A cluster with multiple mutually-distrusting tenants should
 tighten these per project.
 
+## Out of scope: namespaces
+
+This module renders AppProjects only — it never creates the namespaces it
+lists in `destinationNamespaces`. Namespace creation is left to the
+consuming app's own `createNamespace` (on `applications.<app>`), or to a
+companion module if a consumer wants namespaces managed as their own
+resources.
+
+One rule matters wherever that namespace creation ends up living: any
+data-bearing namespace anchored at the `projects` sync-wave should carry the
+Argo sync-option `Prune=false`. This is a hard-won operational lesson from
+the source system — without it, a manifest slip (a renamed/removed resource
+in the rendered tree) can cascade into Argo deleting a live, stateful
+namespace along with everything in it, instead of just the one resource that
+actually should have gone away.
+
 ## Minimal consumer example
 
 ```nix

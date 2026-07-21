@@ -12,9 +12,9 @@ spine assumes.
 |---|---|---|---|
 | `nixk3s.host.enable` | bool | `false` | Enable the module. |
 | `nixk3s.host.role` | enum `"server"` \| `"agent"` | `"server"` | k3s node role. |
-| `nixk3s.host.nodeLabels` | attrsOf str | `{ }` | Kubernetes node labels, rendered to `--node-label=<key>=<value>`. **Read the caveat below before relying on this.** |
+| `nixk3s.host.nodeLabels` | attrsOf str | `{ }` | Kubernetes node labels, rendered to `--node-label=<key>=<value>`. **Read the caveat below before relying on this.** The `gpu = "amd"` example is the cross-project convention this label follows so a node matches the sibling GPU-sharing substrate's default nodeSelector — see <https://nixgpu.corbet.ch>. |
 | `nixk3s.host.airgapImages` | listOf package | `[ ]` | Container-image tarballs imported into k3s's airgap image dir (`services.k3s.images`) before k3s starts — no registry needed. |
-| `nixk3s.host.disableComponents` | listOf str | `[ "traefik" "servicelb" "local-storage" ]` | k3s bundled components to turn off via `--disable=<name>`. |
+| `nixk3s.host.disableComponents` | listOf str | `[ "traefik" "servicelb" "local-storage" ]` | k3s bundled components to turn off via `--disable=<name>`. **Server-only** — `--disable` is a k3s server flag, so this only renders into flags when `role = "server"`; it has no effect on an agent node. |
 | `nixk3s.host.extraFlags` | listOf str | `[ ]` | Raw flags appended after the generated label/disable flags (CIDRs, TLS SANs, node name/IP pins, kubelet args, snapshotter choice, etc). |
 
 ## ⚠ Node labels only apply at first registration
@@ -62,4 +62,6 @@ record of intent; it cannot make k3s re-apply it for you.
 ## Status
 
 Extracted from a production single-node bare-metal k3s cluster; this
-generalized form has not yet been re-verified live.
+generalized form has not yet been re-verified live. The source system is a
+single-node server; agent mode is provided for completeness and has not been
+exercised against a real multi-node cluster.

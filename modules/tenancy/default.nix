@@ -18,6 +18,11 @@
 let
   cfg = config.nixk3s.tenancy;
 
+  # NB: lib.generators.toYAML is lib.generators.toJSON under the hood, so
+  # each AppProject below renders as single-line JSON — valid YAML, but a
+  # poor git diff (whole document changes as one line instead of per-field
+  # hunks). Revisit with typed nixidy resources or a real YAML printer once
+  # this repo has a working eval harness to check the swap against.
   toYAML = lib.generators.toYAML { };
 
   whitelistEntryType = lib.types.submodule {

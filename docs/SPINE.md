@@ -58,12 +58,17 @@ together into one output tree. A consumer flake declares them under a
           # <env-name> is a placeholder — name it after the cluster/env
           # this module set renders for (a repo may define more than one).
           "<env-name>".modules = [
-            ./kubernetes/<env-name>/tenancy.nix   # nixk3s.tenancy — AppProjects first
+            ./kubernetes/<env-name>/tenancy.nix   # nixk3s.tenancy — AppProjects
             ./kubernetes/<env-name>/storage.nix
             ./kubernetes/<env-name>/some-app.nix
-            # one module file per concern; order mostly doesn't matter except
-            # that the tenancy/projects module should render before anything
-            # that references a project by name (see sync-wave below).
+            # one module file per concern; list ORDER here is irrelevant — the
+            # Nix module system doesn't care what order files are merged in.
+            # What actually has to happen before what across the synced
+            # resources is Argo's job: nixk3s.tenancy anchors its AppProjects
+            # Application at sync-wave -2 so they sync (and go Healthy)
+            # before any wave-0 workload Application that references one of
+            # them by name — see modules/tenancy/README.md for the full
+            # sync-wave story.
           ];
         };
       };
@@ -75,12 +80,14 @@ together into one output tree. A consumer flake declares them under a
 }
 ```
 
-`nix run .#nixidy -- build .#<env-name>` renders that env's modules to a
-plain manifest tree (conventionally `gitops/rendered/<env-name>/`, but the
-path is a convention, not something nixidy hardcodes); `switch` does the same
-render and additionally applies it directly, which is useful for a local
-dry-run but is not how the cluster itself gets updated (that's Argo, from
-the committed tree — see below).
+`nix run .#nixidy -- build .#<env-name>` builds the rendered env to
+`./result` for inspection — a local, disposable artifact, not the committed
+tree. `nix run .#nixidy -- switch .#<env-name>` writes the rendered tree into
+the repo at the nixidy-configured target `rootPath` for that env (e.g.
+`./gitops/rendered/<env-name>`) — this is the normal render step, the one
+both a human and CI actually run to produce the tree that gets committed.
+Neither command ever touches the cluster: only Argo CD applies anything, and
+only ever from the committed tree (see below).
 
 ## The rendered tree is the thing Argo watches
 

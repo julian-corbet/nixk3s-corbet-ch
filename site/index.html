@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
 
   <title>nixk3s &mdash; the host is a flake, the cluster is git</title>
-  <meta name="description" content="Bare-metal k3s on NixOS with a fully declarative GitOps spine: nixidy renders typed Nix to plain manifests, Argo CD reconciles with prune + self-heal. Pre-alpha; modules landing now.">
+  <meta name="description" content="Bare-metal k3s on NixOS with a fully declarative GitOps spine: nixidy renders typed Nix to plain manifests, Argo CD reconciles with prune + self-heal. Pre-alpha; first modules landed.">
 
   <meta name="theme-color" content="#0b1120" media="(prefers-color-scheme: dark)">
   <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
@@ -49,7 +49,7 @@
 
 <section id="status" class="how-it-works">
   <div class="container">
-    <h2>Status: pre-alpha, spine is real</h2>
+    <h2>Status: pre-alpha, first modules landed</h2>
     <div class="steps">
       <div class="step">
         <div class="step-num">!</div>
@@ -61,12 +61,12 @@
       </div>
       <div class="step">
         <div class="step-num">!</div>
-        <h3>Modules landing now</h3>
-        <p>The generalized, reusable modules (<code>k3s-host</code>,
-        <code>gitops-spine</code>, <code>tenancy</code>) are being extracted
-        from that production system in parallel with this page. None are
-        published to this repo yet &mdash; nothing here is a download link
-        to code that doesn't exist.</p>
+        <h3>Modules landed</h3>
+        <p>The generalized <code>k3s-host</code> and <code>tenancy</code>
+        modules, and the <a href="https://github.com/julian-corbet/nixk3s-corbet-ch/blob/main/docs/SPINE.md">SPINE.md</a>
+        GitOps spine document, are extracted from that production system and
+        published in this repo &mdash; render-checked, but not yet
+        re-verified on a live cluster.</p>
       </div>
       <div class="step">
         <div class="step-num">!</div>
@@ -113,13 +113,13 @@
 
 <section id="modules" class="commands">
   <div class="container">
-    <h2>Planned modules</h2>
+    <h2>Modules</h2>
     <div class="table-scroll">
       <table>
         <tbody>
-          <tr><td><code>k3s-host</code></td><td>The NixOS side: k3s server with sane bare-metal defaults, declarative node labels, airgap image import, storage-path conventions. Landing now.</td></tr>
-          <tr><td><code>gitops-spine</code></td><td>The nixidy environment pattern plus Argo CD bootstrap: render &rarr; commit &rarr; sync, with the rendered tree excluded from the render trigger so it never loops. Landing now.</td></tr>
-          <tr><td><code>tenancy</code></td><td>The AppProject model and its allowed-destination conventions. Landing now.</td></tr>
+          <tr><td><code>k3s-host</code></td><td>The NixOS side: k3s server with sane bare-metal defaults, declarative node labels, airgap image import, storage-path conventions. Landed.</td></tr>
+          <tr><td><code>SPINE.md</code></td><td>The nixidy environment pattern plus Argo CD bootstrap: render &rarr; commit &rarr; sync, with the rendered tree excluded from the render trigger so it never loops. Landed as a doc.</td></tr>
+          <tr><td><code>tenancy</code></td><td>The AppProject model and its allowed-destination conventions. Landed.</td></tr>
         </tbody>
       </table>
     </div>
@@ -139,6 +139,12 @@
         <h3>nixapps</h3>
         <p>Curated nixidy app modules that deploy onto this spine. See
         <a href="https://nixapps.corbet.ch">nixapps.corbet.ch</a>.</p>
+      </div>
+      <div class="arch-detail">
+        <h3>nixllm</h3>
+        <p>The shared LLM serving lane (behaviors B4/B10/B14/B15 of the nixgpu
+        contract), deployed onto this spine. See
+        <a href="https://nixllm.corbet.ch">nixllm.corbet.ch</a>.</p>
       </div>
     </div>
   </div>
