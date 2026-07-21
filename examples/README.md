@@ -1,3 +1,3 @@
 # Examples
 
-Minimal working configurations. To be filled as modules land.
+Minimal working configurations. To be filled as the modules stabilize.
