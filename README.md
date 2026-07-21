@@ -38,12 +38,14 @@ production-lived answer:
 
 ## Status
 
-**Pre-alpha, first modules landed.** The spine is real: it runs a production
+**Pre-alpha, `k3s-host` dogfooded.** The spine is real: it runs a production
 single-node cluster (15+ Argo applications, GPU workloads, the whole works)
-and has survived node rebuilds and a bare-metal migration. The generalized
-`k3s-host` and `tenancy` modules and the spine document are extracted; the
-generalized forms are render-checked but not yet re-verified on a live
-cluster.
+and has survived node rebuilds and a bare-metal migration — and since
+2026-07-22 that cluster's k3s server config comes from THIS repo's
+`k3s-host` module (live-verified). The `tenancy` module is render-checked
+but not yet live-adopted: it needs namespace-anchor support (Namespace
+objects with `Prune=false` at the projects sync-wave) before it can replace
+a production AppProject set — that's the next roadmap item.
 
 ## Related projects
 
