@@ -36,10 +36,13 @@ a production single-GPU cluster:
 - **Uses it via a service** (calls a shared GPU-backed API, never itself
   touches the device) → `apps`
 
-Add, rename, split, or drop tiers freely — `projects` is a plain
-`attrsOf`, not a fixed enum. A cluster with no GPU workloads at all can
-delete `advanced` outright; one with several scarce resources might want a
-tier per resource.
+Add, rename, or split tiers freely — `projects` is a plain `attrsOf`, not
+a fixed enum, and the three shipped tiers are CONFIG-side `lib.mkDefault`
+definitions: your own definitions merge attr-by-attr with them (add a
+project = add an attr; override a tier's description = redefine it). The
+three tiers are therefore always present while the module is enabled — a
+cluster that genuinely wants a different model replaces it wholesale with
+`lib.mkForce`.
 
 ## Options
 
@@ -48,9 +51,13 @@ tier per resource.
 | `nixk3s.tenancy.enable` | bool | `false` | Enable the module. |
 | `nixk3s.tenancy.argoNamespace` | str | `"argocd"` | Namespace Argo CD and its AppProject CRs live in. |
 | `nixk3s.tenancy.destinationServer` | str | `"https://kubernetes.default.svc"` | `server` field on every generated destination entry. |
-| `nixk3s.tenancy.applicationName` | str | `"projects"` | Name of the nixidy Application carrying the rendered AppProjects. |
-| `nixk3s.tenancy.syncWave` | str | `"-2"` | `argocd.argoproj.io/sync-wave` on the projects Application — must land before wave-0 workloads. |
-| `nixk3s.tenancy.projects` | attrsOf project | three-tier default (see above) | The tenancy model. Each project has `description`, `destinationNamespaces` (empty by default), `sourceRepos` (default `["*"]`), `clusterResourceWhitelist`/`namespaceResourceWhitelist` (default `[{group="*"; kind="*";}]`, i.e. permissive — see below). |
+| `nixk3s.tenancy.appName` | str | `"projects"` | Name of the nixidy Application carrying the rendered AppProjects (and any anchored Namespaces). Override to adopt an existing application name in-place — same pattern as `nixllm.serving.appName`. |
+| `nixk3s.tenancy.syncWave` | str | `"-2"` | `argocd.argoproj.io/sync-wave` on the projects Application — must land before wave-0 workloads. Orders the whole tenancy Application in the app-of-apps; anchored Namespaces need no annotation of their own (same-Application rendering orders them — the optional per-namespace `syncWave` exists only for intra-Application ordering). |
+| `nixk3s.tenancy.projects` | attrsOf project | three tiers via config-side `mkDefault` (see above) | The tenancy model. Each project has `description`, `destinationNamespaces` (empty by default), `sourceRepos` (default `["*"]`), `clusterResourceWhitelist`/`namespaceResourceWhitelist` (default `[{group="*"; kind="*";}]`, i.e. permissive — see below), and `namespaces` (attrsOf namespace, empty by default — see "Anchoring namespaces" below). |
+| `nixk3s.tenancy.projects.<name>.namespaces.<ns>.protected` | bool | `true` | Sets `argocd.argoproj.io/sync-options: Prune=false` on the generated Namespace object. |
+| `nixk3s.tenancy.projects.<name>.namespaces.<ns>.labels` | attrsOf str | `{}` | Extra labels on the generated Namespace object. |
+| `nixk3s.tenancy.projects.<name>.namespaces.<ns>.syncWave` | null or str | `null` | Optional INTRA-Application sync-wave (relative to sibling resources in the tenancy app only); `null` stamps nothing, matching the source system. |
+| `nixk3s.tenancy.projects.<name>.namespaces.<ns>.annotations` | attrsOf str | `{}` | Extra annotations on the generated Namespace object (merged alongside the automatic sync-wave and `Prune=false` annotations). |
 
 ### Why the whitelists default to permissive
 
@@ -63,21 +70,35 @@ fine sync" failure modes without a matching security win when there's only
 one operator. A cluster with multiple mutually-distrusting tenants should
 tighten these per project.
 
-## Out of scope: namespaces
+## Namespaces: mostly out of scope, except when you anchor one
 
-This module renders AppProjects only — it never creates the namespaces it
-lists in `destinationNamespaces`. Namespace creation is left to the
-consuming app's own `createNamespace` (on `applications.<app>`), or to a
-companion module if a consumer wants namespaces managed as their own
-resources.
+This module still never creates the namespaces it lists in
+`destinationNamespaces` **by default**. For most namespaces that remains the
+right call: creation is left to whichever workload Application first targets
+it via its own `createNamespace` (on `applications.<app>`).
 
-One rule matters wherever that namespace creation ends up living: any
-data-bearing namespace anchored at the `projects` sync-wave should carry the
-Argo sync-option `Prune=false`. This is a hard-won operational lesson from
-the source system — without it, a manifest slip (a renamed/removed resource
-in the rendered tree) can cascade into Argo deleting a live, stateful
-namespace along with everything in it, instead of just the one resource that
-actually should have gone away.
+The exception is `projects.<name>.namespaces`: an attrset of namespaces that
+project explicitly **anchors** — rendered as real `Namespace` objects by this
+same tenancy Application, at the same sync-wave as the AppProjects. Anchor a
+namespace here only when the default ordering (created lazily by whichever
+app gets there first) isn't good enough — typically because something else
+(a SealedSecret, a ConfigMap) has to land in the namespace *before* the
+wave-0 workload app's very first sync, or because the namespace needs to be
+protected independent of whichever app(s) eventually target it.
+
+**Why `protected` defaults to `true`:** this is the hard-won operational
+lesson the whole feature exists to encode. Without the Argo sync-option
+`Prune=false`, a manifest slip (a renamed/removed resource somewhere in the
+rendered tree) can make Argo CD read the Namespace itself as
+no-longer-desired and cascade-delete it — and everything running inside it —
+instead of just the one resource that actually should have gone away. Every
+namespace the source system ever anchored this way needed that guard, so the
+option follows suit and defaults on; set `protected = false` per-namespace
+only when you are confident a delete-and-recreate of that namespace is safe.
+
+Every anchored namespace also gets `argocd.argoproj.io/sync-wave` set to the
+same value as `nixk3s.tenancy.syncWave`, so it lands in the same wave as the
+AppProjects rather than drifting to whatever wave Argo would otherwise infer.
 
 ## Minimal consumer example
 
@@ -93,6 +114,12 @@ actually should have gone away.
     projects.data = {
       description = "Stateful data tier — database engines and their operators.";
       destinationNamespaces = [ "dbs" ];
+
+      # Anchor "dbs" here (rather than leaving it to some workload app's
+      # createNamespace) because a SealedSecret needs to land in it before
+      # any wave-0 database Application syncs. protected defaults to true,
+      # so this stateful namespace is also guarded against cascade-delete.
+      namespaces.dbs = { };
     };
   };
 }
