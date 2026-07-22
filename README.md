@@ -38,14 +38,14 @@ production-lived answer:
 
 ## Status
 
-**Pre-alpha, `k3s-host` dogfooded.** The spine is real: it runs a production
+**Pre-alpha, fully dogfooded.** The spine is real: it runs a production
 single-node cluster (15+ Argo applications, GPU workloads, the whole works)
 and has survived node rebuilds and a bare-metal migration — and since
-2026-07-22 that cluster's k3s server config comes from THIS repo's
-`k3s-host` module (live-verified). The `tenancy` module is render-checked
-but not yet live-adopted: it needs namespace-anchor support (Namespace
-objects with `Prune=false` at the projects sync-wave) before it can replace
-a production AppProject set — that's the next roadmap item.
+2026-07-22 that cluster runs BOTH modules from this repo: its k3s server
+config comes from `k3s-host`, and its entire Argo CD project layer (11
+AppProjects + 5 protected namespace anchors) is rendered by `tenancy`,
+adopted in-place with a semantically-verified zero-drift cutover (the
+module + consumer values reproduced the live objects field-exactly).
 
 ## Related projects
 

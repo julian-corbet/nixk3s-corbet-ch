@@ -81,10 +81,11 @@
         <p>The generalized <code>k3s-host</code> and <code>tenancy</code>
         modules, and the <a href="https://github.com/julian-corbet/nixk3s-corbet-ch/blob/main/docs/SPINE.md">SPINE.md</a>
         GitOps spine document, are extracted from that production system and
-        published in this repo. <code>k3s-host</code> is dogfooded &mdash; the
-        production cluster's k3s server config comes from this module since
-        2026-07-22; <code>tenancy</code> is render-checked, awaiting
-        namespace-anchor support before live adoption.</p>
+        published in this repo &mdash; and both modules are dogfooded: since
+        2026-07-22 the production cluster's k3s server config comes from
+        <code>k3s-host</code>, and its entire Argo CD project layer is
+        rendered by <code>tenancy</code> (zero-drift in-place adoption,
+        semantically verified).</p>
       </div>
       <div class="step">
         <div class="step-num">!</div>
