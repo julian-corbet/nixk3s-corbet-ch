@@ -47,6 +47,20 @@ AppProjects + 5 protected namespace anchors) is rendered by `tenancy`,
 adopted in-place with a semantically-verified zero-drift cutover (the
 module + consumer values reproduced the live objects field-exactly).
 
+The repository can now also demonstrate that both modules evaluate, on its own,
+in under four seconds: `nix flake check` renders `tenancy` through real nixidy and
+composes `k3s-host` into a NixOS system, from the placeholder configs in
+[examples/](examples). Both are proven in the failing direction too — a bad
+`role` value and an undefined tenancy option each fail the corresponding check.
+
+Until this landed, `nixidy` was not a flake input here and there was no `checks`
+output at all, so nothing in CI evaluated either module. That never made the
+dogfooding above less true; it just meant the repository could not show its work.
+
+Note the narrowness: the host check evaluates the configuration, it does not boot
+a machine. The example config mounts `tmpfs` on `/` and could never boot anything,
+which is deliberate — it exists to type-check a module, not to describe hardware.
+
 ## Related projects
 
 - [nixgpu](https://github.com/julian-corbet/nixgpu-corbet-ch) — priority-based
