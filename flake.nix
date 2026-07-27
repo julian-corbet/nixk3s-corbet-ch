@@ -30,9 +30,13 @@
       # belongs to whatever ships the apps.
       nixosModules = {
         k3s-host = ./modules/k3s-host;
+        # Only module in this class - trivially the default.
+        default = self.nixosModules.k3s-host;
       };
       nixidyModules = {
         tenancy = ./modules/tenancy;
+        # Only module in this class - trivially the default.
+        default = self.nixidyModules.tenancy;
       };
 
       lib = { };
