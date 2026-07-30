@@ -134,8 +134,11 @@ etc. on `applications.<app>`).
 Extracted from a production single-node k3s cluster's Argo CD project layer
 (originally a static multi-document YAML file rendered as one Application at
 sync-wave `-2`; this module reproduces that shape from typed options instead
-and generalizes the tier names). This generalized form has not yet been
-re-verified live — treat it as a starting point, not a tested artifact.
+and generalizes the tier names). This generalized form has been running live
+there since 2026-07-22 — 11 AppProjects and 5 protected namespace anchors,
+adopted in-place with a semantically-verified zero-drift cutover (the module
+plus consumer values reproduced the live objects field-exactly; see the repo
+README's Status section for detail).
 
 ## Source lineage
 

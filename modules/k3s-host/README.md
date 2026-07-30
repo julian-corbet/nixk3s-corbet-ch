@@ -62,6 +62,8 @@ record of intent; it cannot make k3s re-apply it for you.
 ## Status
 
 Extracted from a production single-node bare-metal k3s cluster; this
-generalized form has not yet been re-verified live. The source system is a
-single-node server; agent mode is provided for completeness and has not been
-exercised against a real multi-node cluster.
+generalized form has been running live there since 2026-07-22, adopted
+in-place with a zero-drift cutover (see the repo README's Status section for
+detail). The source system is a single-node server; agent mode is provided
+for completeness and has not been exercised against a real multi-node
+cluster.
