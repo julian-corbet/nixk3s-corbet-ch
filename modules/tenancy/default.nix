@@ -132,7 +132,7 @@ let
         description = ''
           Namespaces this project's Applications are allowed to deploy
           into (all on `destinationServer`). EMPTY by default — this is a
-          fleet-specific value; a consumer fills it in per project as
+          operator-specific value; a consumer fills it in per project as
           real workloads land. An app whose Application targets a
           namespace missing from here fails Argo CD's spec validation
           (`InvalidSpecError`), not a partial/degraded sync.
@@ -280,7 +280,7 @@ in
         definitions merge attr-by-attr across modules, so your definitions EXTEND the
         three tiers (add a project = add an attr) and override a tier's field by simply
         redefining it — the shipped descriptions are `lib.mkDefault`. Every
-        `destinationNamespaces` list ships EMPTY (fleet-specific values a consumer
+        `destinationNamespaces` list ships EMPTY (operator-specific values a consumer
         supplies). The three tiers are always present while the module is enabled;
         replace the whole model with `lib.mkForce` if you genuinely want them gone.
 

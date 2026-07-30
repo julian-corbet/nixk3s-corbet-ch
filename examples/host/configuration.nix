@@ -4,7 +4,7 @@
 # This is not a machine anyone would run. Everything below is either a stub a
 # bootable configuration is required to have, or the one line that turns the
 # module on. Nothing here describes real hardware, and no disk, hostname or
-# network from any real fleet appears.
+# network from any real host appears.
 { ... }:
 {
   # ── The module under test ────────────────────────────────────────────────

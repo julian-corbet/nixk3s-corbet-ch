@@ -20,7 +20,7 @@
 
     projects = {
       # The three tiers the module ships. Their descriptions come from the
-      # module; only the fleet-specific parts are supplied here.
+      # module; only the operator-specific parts are supplied here.
       #
       # `destinationNamespaces` ships empty on purpose — an Application whose
       # target namespace is missing from its project's list fails Argo CD's spec

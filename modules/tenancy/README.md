@@ -16,7 +16,7 @@ uses it.
 ## The default tenancy model
 
 Ships three tiers, generic on purpose — the namespace lists are **empty by
-default** (that's fleet-specific data only a consumer has):
+default** (that's operator-specific data only a consumer has):
 
 | Tier | For | Never |
 |---|---|---|
