@@ -6,10 +6,10 @@
 # Nothing here is real: namespaces and repository URLs are generic, and no
 # credential appears in any form.
 #
-# Note that `nixk3s.tenancy` has NO required options at all — `enable = true`
-# renders the three-tier model on its own. Everything below is here to exercise
-# the parts of the module that would otherwise stay empty, because a check that
-# renders an empty shell proves nothing about the shell's contents.
+# `nixk3s.tenancy` has NO required options at all — `enable = true` renders the
+# three-tier model on its own. Everything below is here to exercise the parts
+# of the module that would otherwise stay empty, because a check that renders
+# an empty shell proves nothing about the shell's contents.
 {
   # Required by the nixidy environment itself, not by the module.
   nixidy.target.repository = "https://example.com/example-org/example-gitops.git";
