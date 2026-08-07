@@ -41,6 +41,17 @@ production-lived answer:
   is what lets it be public while the clusters it renders for stay private.
   Two visible ways out for what it has no term for — a typed merge onto the
   objects it renders, and a countable `raw` escape hatch.
+- **`addressing`** ([`nixidyModules.addressing`](modules/addressing), landed) —
+  the band model: a declaring repository binds one *band* (a contiguous run of
+  slots), every app it declares takes its *slot* inside that band, and a slot
+  outside it fails eval. A slot is not an address — it is the identity the
+  layers underneath map into however many address spaces a fleet keeps, which
+  is why this is a **guard, not an allocator**: nothing here assigns a slot or
+  moves one, because moving one moves every plane it feeds at the same instant.
+  It refuses (naming the app, the number and both bands) and it reports the next
+  free slot; the human decides. Bands are finite, so a band that fills up says
+  so at eval instead of becoming a collision. Every band, base and binding is a
+  value the consumer supplies — the mechanism is public, the layout is not.
 - **[docs/SPINE.md](docs/SPINE.md)** (landed) — the GitOps spine pattern:
   nixidy render → commit → Argo CD sync, with the rendered tree excluded from
   the render trigger (no loops).
@@ -56,15 +67,20 @@ k3s server config comes from `k3s-host`, and its entire Argo CD project layer
 adopted in-place with a semantically-verified zero-drift cutover (the
 module + consumer values reproduced the live objects field-exactly). `apps` is
 newer: its vocabulary is extracted from that cluster's app layer, but it has
-not yet replaced it.
+not yet replaced it. `addressing` is newer still — the band model it encodes has
+governed that cluster's slots by hand and by convention for a year, and this is
+the first time the convention is a thing that can refuse you.
 
 The repository can also demonstrate that its modules evaluate, on its own, in
-seconds: `nix flake check` renders `tenancy` and `apps` through real nixidy and
-composes `k3s-host` into a NixOS system, from the placeholder configs in
-[examples/](examples). All are proven in the failing direction too — a bad
-`role` value and an undefined tenancy option each fail the corresponding check,
-and the app grammar's twenty guards each get a declaration that violates them
-and must be refused, against a control declaration that must render.
+seconds: `nix flake check` renders `tenancy`, `apps` and `addressing` through
+real nixidy and composes `k3s-host` into a NixOS system, from the placeholder
+configs in [examples/](examples). All are proven in the failing direction too —
+a bad `role` value and an undefined tenancy option each fail the corresponding
+check, the app grammar's twenty guards each get a declaration that violates them
+and must be refused, against a control declaration that must render, and the
+band model is checked the same way plus one step further: the *text* of its
+refusal is asserted, because a guard that fires without naming the app, the
+number and both bands is only half a guard.
 
 `apps` goes one step further than evaluating: `checks/apps-render.nix` parses
 the manifests the grammar actually produced and asserts them field by field,

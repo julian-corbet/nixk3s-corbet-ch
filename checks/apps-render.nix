@@ -23,6 +23,10 @@ pkgs.runCommand "nixk3s-apps-render"
   # Not a manifest, so it cannot be asserted from the tree: the read-only list
   # that makes the escape hatch countable.
   escapeHatchApps = lib.concatStringsSep " " env.config.nixk3s.appPlatform.rawEscapeHatchApps;
+  # Also not a manifest: the band model governs a number and renders nothing
+  # from it, so the only way to see it work in the rendered tree is that the
+  # private overlay turned the slot into an address (asserted below).
+  webSlot = toString env.config.nixk3s.apps.example-web.slot;
 } ''
   set -euo pipefail
   fail=0
@@ -188,7 +192,10 @@ pkgs.runCommand "nixk3s-apps-render"
   check "escape hatch is countable" "example-canvas" "$escapeHatchApps"
 
   echo "== a private overlay sets what the public vocabulary refuses to express =="
-  check "pinned clusterIP"      "10.0.0.9" "$(y '.spec.clusterIP' $WEB_S)"
+  # Derived from the app's SLOT, which is the point: the public side declares
+  # one number inside its repository's band, the private side decides what that
+  # number means. Nothing in the rendered tree comes from the band model itself.
+  check "pinned clusterIP"      "10.0.0.$webSlot" "$(y '.spec.clusterIP' $WEB_S)"
   check "still the grammar's Service" "public" "$(y '.metadata.labels."nixk3s.dev/exposure"' $WEB_S)"
   check "still ClusterIP"       "ClusterIP" "$(y '.spec.type' $WEB_S)"
   check "pod-spec knob"         "false"     "$(y '.spec.template.spec.enableServiceLinks' $WEB_D)"

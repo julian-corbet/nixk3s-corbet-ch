@@ -36,11 +36,14 @@
       nixidyModules = {
         apps = ./modules/apps;
         tenancy = ./modules/tenancy;
-        # Both modules of this class: the app grammar, and the tenancy model it
-        # renders its Applications into. They are independent — either works
-        # alone — but importing both is what makes the destinations interlock
-        # checkable, so the default carries the pair.
-        default = { imports = [ ./modules/apps ./modules/tenancy ]; };
+        addressing = ./modules/addressing;
+        # Every module of this class: the app grammar, the tenancy model it
+        # renders its Applications into, and the band model that governs where
+        # its apps sit in the cluster's identity space. They are independent —
+        # each works alone — but importing them together is what makes the
+        # interlocks checkable (a destination missing from a project, a slot
+        # outside its repository's band), so the default carries all three.
+        default = { imports = [ ./modules/apps ./modules/tenancy ./modules/addressing ]; };
       };
 
       lib = { };
@@ -92,6 +95,16 @@
             inherit pkgs lib nixidy;
             appsModule = self.nixidyModules.apps;
             tenancyModule = self.nixidyModules.tenancy;
+          };
+
+          # 5. The band model, both directions at once, because a guard is only
+          # worth what its failing direction proves: an in-band slot renders and
+          # the report counts it, while an out-of-band slot, an unbound origin,
+          # a full band and a doubly-claimed slot each fail eval.
+          addressing = import ./checks/addressing.nix {
+            inherit pkgs lib nixidy;
+            appsModule = self.nixidyModules.apps;
+            addressingModule = self.nixidyModules.addressing;
           };
 
           # Forcing the derivation PATH evaluates the whole NixOS configuration —

@@ -57,6 +57,36 @@
     hostPathNodeSelector = { "kubernetes.io/hostname" = "example-node"; };
   };
 
+  # The band model, with the layout a consumer would supply. EVERY value here is
+  # invented for the check: the module ships no band, no base, no binding and no
+  # fallback, because which category owns which run of the number space — and
+  # which repository owns which category — is the shape of somebody's fleet.
+  nixk3s.addressing = {
+    enable = true;
+
+    bands = {
+      example-alpha = {
+        base = 32;
+        description = "one category of thing";
+      };
+      example-beta = {
+        base = 48;
+        description = "another, and the one to take when neither obviously fits";
+      };
+    };
+
+    # Which repository owns which category. Two origins, so the render exercises
+    # a band with apps in it and a band with none.
+    bindings = {
+      example-repo-one = "example-alpha";
+      example-repo-two = "example-beta";
+    };
+
+    # Named, never applied: an unbound origin still fails eval, and this only
+    # lets the error say what to do about it.
+    fallbackBand = "example-beta";
+  };
+
   # Three apps, chosen to cover the paths that differ in what gets RENDERED, not
   # merely in what evaluates: an always-on exposed app with probes and secrets,
   # a scale-to-zero GPU app on a claim that also uses the escape hatch, and a
@@ -66,6 +96,13 @@
     # Secret, sized, and probed over HTTP.
     example-web = {
       namespace = "example-apps";
+      # WHO declared this app, and WHERE its identity sits. The origin is the
+      # declaring repository naming itself; the slot is a fleet fact a private
+      # consumer passes in, exactly like a node path. Nothing is rendered from
+      # it — the private layer reads it to pin an address (see
+      # examples/all/private-overlay.nix).
+      origin = "example-repo-one";
+      slot = 33;
       image = "registry.example.com/example-org/example-web:1.4.2@sha256:0000000000000000000000000000000000000000000000000000000000000000";
       ports.http.number = 8080;
       exposure = "public";
@@ -93,6 +130,11 @@
     example-canvas = {
       namespace = "example-gpu";
       project = "advanced";
+      # Same repository, so the same band — a different project and a different
+      # namespace change nothing about that: tenancy sorts by what a thing does,
+      # the band model sorts by who declares it.
+      origin = "example-repo-one";
+      slot = 34;
       # Deliberately tag-only, so the render check sees the unpinned-image
       # warning fire as well as the pinned path above.
       image = "registry.example.com/example-org/example-canvas:2026.8";
@@ -125,6 +167,11 @@
     example-worker = {
       namespace = "example-worker";
       createNamespace = true;
+      # A different repository, hence a different band — and no slot at all:
+      # this app renders no Service, so there is no in-cluster address to name
+      # and nothing asks it for one. Its origin still binds a band, because
+      # every origin must.
+      origin = "example-repo-two";
       image = "registry.example.com/example-org/example-worker:0.3.0@sha256:1111111111111111111111111111111111111111111111111111111111111111";
       command = [ "/bin/example-worker" ];
       args = [ "--queue" "example" ];
