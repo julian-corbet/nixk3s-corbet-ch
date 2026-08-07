@@ -51,11 +51,15 @@
         let
           pkgs = nixpkgs.legacyPackages.${system};
 
-          # 1. The nixidy module, rendered to real manifests.
+          # 1. The nixidy modules, rendered to real manifests. The private
+          # overlay is part of the render on purpose: the app grammar's answer
+          # to "my app needs a fleet fact you refuse to express" is that a
+          # private module defines it on the rendered object, and a claim like
+          # that is worth nothing unchecked.
           env = nixidy.lib.mkEnv {
             inherit pkgs;
             modules = lib.attrValues self.nixidyModules
-              ++ [ ./examples/all/values.nix ];
+              ++ [ ./examples/all/values.nix ./examples/all/private-overlay.nix ];
           };
 
           # 2. The NixOS module, composed into a real system. Only the stubs a
@@ -77,8 +81,7 @@
           # renders a Deployment whose selector misses its own pods is worth
           # nothing, and only a parser looking at the output can tell.
           apps-render = import ./checks/apps-render.nix {
-            inherit pkgs;
-            environmentPackage = env.environmentPackage;
+            inherit pkgs lib env;
           };
 
           # 4. The same grammar in the failing direction: every guard it makes

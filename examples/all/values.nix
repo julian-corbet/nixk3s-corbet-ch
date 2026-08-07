@@ -49,23 +49,38 @@
     };
   };
 
-  # The GPU app below needs a device, and the grammar refuses to guess what this
-  # cluster calls one — so the example names it, generically.
-  nixk3s.appPlatform.gpuResourceName = "example.com/gpu";
+  # Two cluster facts the grammar refuses to guess: what this cluster calls a
+  # GPU, and which node holds the directories that node-path state lives on.
+  # Both are set once, here, instead of in every app.
+  nixk3s.appPlatform = {
+    gpuResourceName = "example.com/gpu";
+    hostPathNodeSelector = { "kubernetes.io/hostname" = "example-node"; };
+  };
 
   # Three apps, chosen to cover the paths that differ in what gets RENDERED, not
-  # merely in what evaluates: an always-on exposed app with a probe, a
-  # scale-to-zero GPU app with state, and a portless worker that owns its own
-  # namespace.
+  # merely in what evaluates: an always-on exposed app with probes and secrets,
+  # a scale-to-zero GPU app on a claim that also uses the escape hatch, and a
+  # portless worker on node-path state that owns its own namespace.
   nixk3s.apps = {
-    # Always-on, publicly exposed, digest-pinned, with a readiness probe.
+    # Always-on, publicly exposed, digest-pinned, both consumption modes of a
+    # Secret, sized, and probed over HTTP.
     example-web = {
       namespace = "example-apps";
       image = "registry.example.com/example-org/example-web:1.4.2@sha256:0000000000000000000000000000000000000000000000000000000000000000";
       ports.http.number = 8080;
       exposure = "public";
       replicas = 2;
-      probe = { port = "http"; path = "/healthz"; };
+      probes.readiness = { port = "http"; path = "/healthz"; initialDelaySeconds = 10; };
+      probes.liveness = { port = "http"; path = "/healthz"; periodSeconds = 30; failureThreshold = 6; };
+      resources.requests = { cpu = "50m"; memory = "64Mi"; };
+      resources.limits = { memory = "256Mi"; };
+      # Two Secrets, consumed the two different ways. Neither the values nor
+      # where they come from are the app's business — only the names.
+      secrets.credentials.env = {
+        EXAMPLE_DB_PASSWORD = "db-password";
+        EXAMPLE_SESSION_KEY = "session-key";
+      };
+      secrets.oidc = { secret = "example-web-oidc"; envFrom = true; };
       # A container-local bind address: allowed on purpose. The address guard
       # rejects fleet addresses, not the fact that a server binds to any
       # interface inside its own container.
@@ -73,7 +88,8 @@
     };
 
     # Scale-to-zero, needs the GPU (so the wake front resolves to sablier
-    # without being named), and mounts an existing claim BY NAME.
+    # without being named), mounts an existing claim BY NAME, is adopted in
+    # place, and carries one object the grammar has no term for.
     example-canvas = {
       namespace = "example-gpu";
       project = "advanced";
@@ -84,17 +100,39 @@
       exposure = "nb";
       scaling = "scale-to-zero";
       gpu = true;
+      adopt = true;
       state.config = { claim = "example-canvas-config"; mountPath = "/config"; };
+      # THE ESCAPE HATCH, used as intended: a whole object with no term in this
+      # vocabulary, passed through verbatim. It warns, and the app's name shows
+      # up in `appPlatform.rawEscapeHatchApps` so the count is visible.
+      raw = [
+        ''
+          apiVersion: v1
+          kind: ConfigMap
+          metadata:
+            name: example-canvas-extra
+            namespace: example-gpu
+          data:
+            example.conf: |
+              # an object this grammar has no term for
+        ''
+      ];
     };
 
     # No ports at all: renders a Deployment and no Service. Creates its own
-    # namespace, which is therefore stamped Prune=false.
+    # namespace, which is therefore stamped Prune=false. Its state is a
+    # directory on a node, which pins it there — the rendered objects say so.
     example-worker = {
       namespace = "example-worker";
       createNamespace = true;
       image = "registry.example.com/example-org/example-worker:0.3.0@sha256:1111111111111111111111111111111111111111111111111111111111111111";
       command = [ "/bin/example-worker" ];
       args = [ "--queue" "example" ];
+      # The path is a parameter, exactly like `namespace`: a real consumer
+      # passes its own in from a private module. This one is a placeholder.
+      state.spool = { hostPath = "/example/spool/example-worker"; mountPath = "/var/spool/example"; };
+      # A Secret consumed as files rather than environment.
+      secrets.credentials = { secret = "example-worker-credentials"; mountPath = "/run/credentials"; };
     };
   };
 }

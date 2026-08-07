@@ -2,11 +2,11 @@
 # NEEDS, from which this module renders the Kubernetes objects.
 #
 # WHY A GRAMMAR AT ALL. Every hand-written workload module re-implements the
-# same scaffolding: an `image`, a `port`, a namespace, then two hundred lines
-# hand-building a Deployment and a Service that differ from the next app's in
-# about six places. That repetition IS the missing abstraction. Here an app
-# declares its needs in a dozen lines and this module renders the rest, so the
-# six places that actually differ are the only six things anyone writes.
+# same scaffolding: an `image`, a `port`, a namespace, then a couple of hundred
+# lines hand-building a Deployment and a Service that differ from the next
+# app's in about six places. That repetition IS the missing abstraction. Here
+# an app declares its needs in a dozen lines and this module renders the rest,
+# so the six places that actually differ are the only six things anyone writes.
 #
 # AN APP IS NOT A PLANE. The sibling deployment project states the principle
 # this module obeys: keeping the boot object BELOW the configuration plane
@@ -19,27 +19,43 @@
 # THE PUBLIC/PRIVATE BOUNDARY — the reason this vocabulary can live in a public
 # repository at all:
 #
-#   An app declares NEEDS. Someone else allocates NUMBERS.
+#   An app declares NEEDS. Someone else supplies the VALUES.
 #
-# "I need a stable address" is a need; the address is a fleet fact. "I need my
-# state to survive a restart" is a need; which storage it lands on is a fleet
-# fact. So this option surface has no address, no slot, no octet, no UID/GID,
-# no storage path — not as a discouraged field, but as an ABSENT one:
+# Options are parameters. This repository declares them; a private consumer
+# sets them — exactly the way `namespace` already works. What must never happen
+# is a fleet fact getting BAKED IN here: no address, no slot, no octet, no UID,
+# no storage path appears in this file or in any public declaration written
+# against it. Three of those are structurally impossible to write at all:
 #
 #   - `exposure` is a CLASS (`internal` / `nb` / `public`), never an address.
-#     Services render `ClusterIP`, always. Nothing here can pin an external IP.
-#   - `state` references an EXISTING claim BY NAME. There is no path option, and
-#     a claim value containing a `/` fails eval — that is what a storage path
-#     looks like when someone tries to smuggle one through a name field.
+#     Services render `ClusterIP`, always; nothing here reaches
+#     `loadBalancerIP`, `externalIPs` or `nodePort`.
+#   - `state.<name>.claim` and `secrets.<name>.secret` are NAMES of objects that
+#     already exist. A value containing `/` fails eval — that is what a storage
+#     path looks like when someone tries to smuggle one through a name field.
 #   - Free-text values (`image`, `env`, `command`, `args`) are scanned for IP
 #     literals and rejected. Container-local addresses (`0.0.0.0`, loopback)
-#     are allowed, because those are not facts about anyone's network.
-#   - There is deliberately NO generic escape hatch (no `extraPodSpec`, no raw
-#     manifest passthrough). One would re-open every hole above. A private
-#     overlay that needs a private number sets it on the nixidy resource
-#     directly — `applications.<app>.resources...` merges with what this module
-#     renders — which keeps the private fact in the private repository where it
-#     belongs, instead of in this vocabulary.
+#     are allowed, because those are facts about a container, not a network.
+#
+# `state.<name>.hostPath` is the one term whose VALUE is unavoidably a path —
+# because two thirds of real apps are backed that way, and a grammar that
+# cannot say so is a grammar people bypass. It is a parameter like any other:
+# the app declares it needs a path, the private consumer passes one in.
+#
+# TWO WAYS OUT, both deliberate and both visible:
+#
+#   1. TYPED MERGE (preferred). A consumer's private module defines more fields
+#      on the very objects rendered here — `applications.<app>.resources...` —
+#      and the module system merges them. That is how a pinned ClusterIP, an
+#      init container, a UID, or a pod-spec knob this vocabulary has no term
+#      for gets set, without any of it entering the public declaration.
+#   2. `raw` — YAML documents passed through with no typing and no schema
+#      defaults injected, for whole objects the grammar has no term for at all
+#      (a wake-front CR, a ConfigMap). It is deliberately NOT scanned, so it is
+#      the one place the boundary stops being enforced: hence every app that
+#      uses it warns at render, and `appPlatform.rawEscapeHatchApps` lists them
+#      so the number is countable rather than a vague worry. An abstraction
+#      people route around is worse than one visible hatch.
 #
 # THE TWO TENANCY LESSONS, paid for in production and encoded here so they
 # cannot be rediscovered (see modules/tenancy for the long form):
@@ -114,7 +130,8 @@ let
   imageRegistry = image: lib.head (lib.splitString "/" image);
 
   # Every free-text value on one app, paired with where it came from, so a
-  # rejection can name the exact field instead of just the app.
+  # rejection can name the exact field instead of just the app. `raw` is
+  # deliberately absent: see the escape-hatch note in the header.
   scannedStrings = app:
     [{ where = "image"; value = imageRegistry app.image; }]
     ++ lib.mapAttrsToList (k: v: { where = "env.${k}"; value = v; }) app.env
@@ -138,6 +155,14 @@ let
     else if app.gpu then "sablier"
     else "keda";
 
+  stateEntries = app: lib.attrValues app.state;
+  secretEntries = app: lib.attrValues app.secrets;
+
+  # hostPath-backed state pins the pod to whichever node holds that path. On a
+  # one-node cluster that is invisible; the day a second node joins it becomes
+  # "the app runs, and silently reads a different (or empty) directory".
+  nodePinned = app: lib.any (st: st.hostPath != null) (stateEntries app);
+
   # The selector is name-only and MUST stay that way: a Deployment's selector
   # is immutable after creation, so folding a mutable classification like
   # `exposure` into it would make changing that class a delete-and-recreate.
@@ -152,7 +177,8 @@ let
       "${platform.labelPrefix}/scaling" = app.scaling;
     }
     // lib.optionalAttrs (front != null) { "${platform.labelPrefix}/wake" = front; }
-    // lib.optionalAttrs app.gpu { "${platform.labelPrefix}/gpu" = "true"; };
+    // lib.optionalAttrs app.gpu { "${platform.labelPrefix}/gpu" = "true"; }
+    // lib.optionalAttrs (nodePinned app) { "${platform.labelPrefix}/node-pinned" = "true"; };
 
   gpuLimits = app:
     lib.optionalAttrs (app.gpu && platform.gpuResourceName != null) {
@@ -192,58 +218,177 @@ let
   stateType = lib.types.submodule {
     options = {
       claim = lib.mkOption {
-        type = lib.types.str;
+        type = lib.types.nullOr lib.types.str;
+        default = null;
         description = ''
           NAME of an existing PersistentVolumeClaim to mount. A name, never a
-          path: which storage backs the claim, on which node, from which
-          dataset, is a fleet fact allocated privately and deliberately
-          unsayable here. A value containing `/` fails eval.
+          path: which storage backs the claim is decided outside the app, and a
+          value containing `/` fails eval.
 
-          This grammar never CREATES the claim, and that is the point: the
-          claim outlives the app, so its existence is not the app's to declare.
+          This grammar never CREATES the claim, and that is the point: the claim
+          outlives the app, so its existence is not the app's to declare.
+        '';
+      };
+
+      hostPath = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        description = ''
+          Path on the NODE to mount instead of a claim. The other backing, and
+          in practice the more common one — most self-hosted apps sit on a
+          directory somebody already curates.
+
+          IT PINS THE POD TO A NODE. The path only exists on the node that has
+          it, so the app can only ever run there. On a single-node cluster that
+          is invisible; the day a second node joins, this app either becomes
+          unschedulable elsewhere or — worse — runs there against a different
+          or empty directory. Set `nixk3s.appPlatform.hostPathNodeSelector` and
+          the pin becomes an explicit `nodeSelector` instead of a surprise; the
+          rendered objects also carry a `<prefix>/node-pinned` label either way.
+
+          The VALUE is a fleet fact and belongs to the private consumer that
+          passes it in. A public declaration takes it as a parameter (exactly
+          like `namespace`) and never writes one down.
+        '';
+      };
+
+      hostPathType = lib.mkOption {
+        type = lib.types.enum [
+          "Directory"
+          "DirectoryOrCreate"
+          "File"
+          "FileOrCreate"
+          "Socket"
+          "CharDevice"
+          "BlockDevice"
+        ];
+        default = "Directory";
+        description = ''
+          `hostPath.type` for a hostPath backing. `Directory` (the default)
+          refuses to start the pod when the path is missing, which is the safe
+          answer for state that must already exist; `DirectoryOrCreate` creates
+          an empty one, and is how an app silently comes up with no data.
         '';
       };
 
       mountPath = lib.mkOption {
         type = lib.types.str;
         description = ''
-          Absolute path INSIDE the container where the claim is mounted. A
-          container-internal fact (`/config`, `/data`), not a host path — the
-          grammar has no host-path option at all.
+          Absolute path INSIDE the container where this volume is mounted — a
+          container-internal fact (`/config`, `/data`), not a host path.
         '';
       };
 
       readOnly = lib.mkOption {
         type = lib.types.bool;
         default = false;
-        description = "Mount the claim read-only.";
+        description = "Mount read-only.";
       };
     };
   };
+
+  secretType = lib.types.submodule ({ name, ... }: {
+    options = {
+      secret = lib.mkOption {
+        type = lib.types.str;
+        default = name;
+        description = ''
+          NAME of an existing Secret. Naming a secret is a need; supplying it is
+          the consumer's job — this grammar has no option that carries a
+          secret's CONTENT, and never will, because everything it renders is
+          committed to git. Where the Secret comes from (a sealed secret, an
+          operator, kubectl) is outside the app's business.
+        '';
+      };
+
+      envFrom = lib.mkOption {
+        type = lib.types.bool;
+        default = false;
+        description = ''
+          Inject every key in the Secret as an environment variable. Convenient,
+          and blunt: the app gets whatever the Secret happens to contain, so a
+          key added later lands in the process environment unannounced. Prefer
+          `env` when you know the keys.
+        '';
+      };
+
+      env = lib.mkOption {
+        type = lib.types.attrsOf lib.types.str;
+        default = { };
+        example = { DATABASE_PASSWORD = "password"; };
+        description = ''
+          Environment variables sourced from individual keys, as
+          `<VARIABLE> = "<key in the Secret>"`. Renders `secretKeyRef`, so the
+          value never passes through Nix or the rendered tree.
+        '';
+      };
+
+      mountPath = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        description = ''
+          Absolute path inside the container to mount the Secret at, one file
+          per key. For apps that read credentials from a file rather than the
+          environment. Mounted read-only.
+        '';
+      };
+
+      optional = lib.mkOption {
+        type = lib.types.bool;
+        default = false;
+        description = ''
+          Let the pod start when the Secret does not exist. Off by default: an
+          app that silently starts without its credentials fails later, further
+          from the cause.
+        '';
+      };
+    };
+  });
 
   probeType = lib.types.submodule {
     options = {
       port = lib.mkOption {
         type = lib.types.str;
-        description = "Name of one of this app's declared `ports` to probe over HTTP.";
+        description = "Name of one of this app's declared `ports` to probe.";
       };
 
       path = lib.mkOption {
-        type = lib.types.str;
-        default = "/";
-        description = "HTTP path to GET.";
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        description = ''
+          HTTP path to GET. `null` (the default) probes the TCP socket instead
+          — the right answer for anything that is not an HTTP server, and the
+          honest one for an HTTP server with no cheap health endpoint.
+        '';
       };
 
       initialDelaySeconds = lib.mkOption {
         type = lib.types.ints.unsigned;
-        default = 10;
+        default = 0;
         description = "Delay before the first probe.";
       };
 
       periodSeconds = lib.mkOption {
-        type = lib.types.ints.unsigned;
+        type = lib.types.ints.positive;
         default = 10;
         description = "Interval between probes.";
+      };
+
+      failureThreshold = lib.mkOption {
+        type = lib.types.ints.positive;
+        default = 3;
+        description = ''
+          Consecutive failures before the probe's verdict is acted on. This is
+          the number that decides how long a slow start is tolerated
+          (`periodSeconds * failureThreshold`), and the usual cause of a
+          restart loop on a big application is leaving it at the default.
+        '';
+      };
+
+      timeoutSeconds = lib.mkOption {
+        type = lib.types.ints.positive;
+        default = 1;
+        description = "How long one probe may take before it counts as failed.";
       };
     };
   };
@@ -279,8 +424,7 @@ let
           Whether this app creates its namespace. Defaults to false: a
           namespace usually outlives any one app in it, and where it does, the
           right owner is the tenancy layer that anchors it (see the tenancy
-          module's `namespaces`), not whichever workload happened to arrive
-          first.
+          module's `namespaces`), not whichever workload arrived first.
 
           A namespace created here is ALWAYS stamped
           `argocd.argoproj.io/sync-options: Prune=false`, and there is no
@@ -305,9 +449,9 @@ let
         description = ''
           Container image. PIN IT BY DIGEST
           (`registry/name:tag@sha256:<digest>`): a tag is a moving target, and
-          a GitOps tree whose rendered manifests are identical across two
-          syncs that produce different running code is a tree that cannot be
-          audited. A tag-only image renders fine and warns.
+          a GitOps tree whose rendered manifests are identical across two syncs
+          that produce different running code is a tree that cannot be audited.
+          A tag-only image renders fine and warns.
         '';
       };
 
@@ -327,11 +471,11 @@ let
         type = lib.types.attrsOf lib.types.str;
         default = { };
         description = ''
-          Plain environment variables. PLAIN is the operative word: no secret
-          belongs here (a rendered manifest is committed to git in this spine),
-          and no address — values are scanned for IP literals and rejected, so
-          that a fleet fact cannot enter a public app declaration through the
-          one free-text field.
+          Plain environment variables. PLAIN is the operative word: a secret
+          belongs in `secrets` (a rendered manifest is committed to git in this
+          spine), and an address belongs to whatever allocates addresses —
+          values are scanned for IP literals and rejected, so a fleet fact
+          cannot enter through the one free-text field.
         '';
       };
 
@@ -340,8 +484,8 @@ let
         default = { };
         description = ''
           Named ports the container listens on. The attribute name is the port
-          name used by the Service and by `probe.port`. An app with no ports
-          (a worker, a cron-shaped process) renders no Service at all.
+          name used by the Service and by the probes. An app with no ports (a
+          worker, a cron-shaped process) renders no Service at all.
         '';
       };
 
@@ -357,11 +501,11 @@ let
             - `public`   — reachable from the internet.
 
           Today the class is recorded on every rendered object as a label, so
-          the front that implements it (an ingress, a tunnel, an overlay
-          route) can select on it and be added without reshaping any app
-          declaration. What the class NEVER becomes here is a number: no
-          LoadBalancer address, no node port, no hostname. Those are fleet
-          facts, allocated where fleet facts belong.
+          the front that implements it (an ingress, a tunnel, an overlay route)
+          can select on it and be added without reshaping any app declaration.
+          What the class NEVER becomes here is a number: no LoadBalancer
+          address, no node port, no hostname. Those are fleet facts, allocated
+          where fleet facts belong.
         '';
       };
 
@@ -370,11 +514,16 @@ let
         default = "always";
         description = ''
           `always` — a running replica count this app owns.
-          `scale-to-zero` — idles at zero replicas; a wake front brings it up
-          on demand. The rendered Deployment then carries NO replica count and
-          the Argo CD Application ignores `/spec/replicas`, because the wake
-          front owns that field: leave it in the manifest and every sync fights
-          the autoscaler over it.
+          `scale-to-zero` — idles at zero replicas; a wake front brings it up on
+          demand. The rendered Deployment then carries NO replica count and the
+          Argo CD Application ignores `/spec/replicas`, because the wake front
+          owns that field: leave it in the manifest and every sync fights the
+          autoscaler over it.
+
+          The front's own object (an HTTP scaled object, a middleware) is NOT
+          rendered here: it needs the hostname requests arrive on, which is a
+          fleet fact. This grammar records the class; the layer that owns
+          hostnames renders the front.
         '';
       };
 
@@ -416,29 +565,142 @@ let
         '';
       };
 
+      resources = {
+        requests = lib.mkOption {
+          type = lib.types.attrsOf lib.types.str;
+          default = { };
+          example = { cpu = "50m"; memory = "64Mi"; };
+          description = ''
+            Compute the scheduler must find for this app. Requests are what
+            scheduling is actually based on; an app with none is placed as if
+            it were free.
+          '';
+        };
+
+        limits = lib.mkOption {
+          type = lib.types.attrsOf lib.types.str;
+          default = { };
+          example = { memory = "256Mi"; };
+          description = ''
+            Ceilings. A memory limit is a kill threshold, which is usually what
+            you want for a leaky app; a CPU limit is a throttle, which is
+            usually not — it makes a bursty app slow rather than a noisy one
+            quiet. A GPU device request, when `gpu` is set, is added here
+            automatically.
+          '';
+        };
+      };
+
       state = lib.mkOption {
         type = lib.types.attrsOf stateType;
         default = { };
         description = ''
-          Persistent state this app NEEDS, keyed by volume name: each entry
-          names an EXISTING claim and where to mount it. Declaring any state
-          also switches the Deployment to the `Recreate` strategy — a
-          single-writer claim plus a rolling update is a deadlock, where the
-          new pod waits for a volume the old pod will not release until the new
-          one is ready.
+          Persistent state this app NEEDS, keyed by volume name. Each entry is
+          backed by EITHER an existing claim (`claim`) OR a path on the node
+          (`hostPath`) — one concept, two backings, because that is what real
+          apps divide into. Exactly one backing per entry; neither is created
+          here.
+
+          Declaring any state also switches the Deployment to the `Recreate`
+          strategy: a single-writer volume plus a rolling update is a deadlock,
+          where the new pod waits for a volume the old pod will not release
+          until the new one is ready.
         '';
       };
 
-      probe = lib.mkOption {
-        type = lib.types.nullOr probeType;
-        default = null;
+      secrets = lib.mkOption {
+        type = lib.types.attrsOf secretType;
+        default = { };
         description = ''
-          Optional HTTP readiness probe. Readiness only, on purpose: it gates
-          Service endpoints and rollouts, which is what an app-shaped grammar
-          can get right. A synthesized LIVENESS probe cannot be — the same
-          default that is merely conservative for a web app restart-loops a
-          slow-starting one forever. An app that wants one declares it on the
-          rendered resource directly.
+          Secrets this app NEEDS, keyed by a local name (the Secret's own name
+          defaults to it). Each entry says how the app consumes it: whole-Secret
+          `envFrom`, named keys as `env` variables, a `mountPath`, or several at
+          once — but at least one, because a reference nothing consumes is a
+          typo, not a declaration.
+
+          The app names a Secret; it never carries the content. Nothing in this
+          vocabulary can express a secret's value, so a declaration is safe to
+          publish even when the Secret it names is not.
+        '';
+      };
+
+      probes = {
+        readiness = lib.mkOption {
+          type = lib.types.nullOr probeType;
+          default = null;
+          description = ''
+            Readiness probe: gates Service endpoints and rollouts. The one probe
+            almost every app should have, and the cheapest to get right.
+          '';
+        };
+
+        liveness = lib.mkOption {
+          type = lib.types.nullOr probeType;
+          default = null;
+          description = ''
+            Liveness probe: restarts the container when it fails. NEVER
+            synthesized, only ever what you write here — a guessed liveness
+            probe is the classic way to put a slow-starting app into a restart
+            loop that looks like the app's fault. Give it a real
+            `failureThreshold`, or leave it null and let readiness do its job.
+          '';
+        };
+
+        startup = lib.mkOption {
+          type = lib.types.nullOr probeType;
+          default = null;
+          description = ''
+            Startup probe: suspends the liveness probe until the app has come up
+            once. The correct answer for an app whose first boot is slow
+            (migrations, an index rebuild) but whose steady state is fast —
+            better than inflating the liveness thresholds forever.
+          '';
+        };
+      };
+
+      adopt = lib.mkOption {
+        type = lib.types.bool;
+        default = false;
+        description = ''
+          Render this Application with server-side apply and server-side diff,
+          for taking over objects that ALREADY EXIST in the cluster — applied
+          by an addon, by kubectl, or by a hand-written manifest this
+          declaration replaces.
+
+          THE HAZARD THIS EXISTS FOR. A rendered spec is never byte-identical to
+          the YAML it replaces: labels differ, fields this grammar sets appear,
+          fields it does not set disappear. Argo CD sees a diff and acts on it —
+          which for a stateless app is a rollout nobody notices, and for a
+          stateful one is downtime, because `state` forces `Recreate`: the old
+          pod stops before the new one starts. Server-side apply and diff shrink
+          that diff to what genuinely changed instead of a client-side
+          reconstruction of it, which is what makes an in-place adoption
+          possible at all. It does not make the diff zero. Before flipping a
+          live stateful app onto this grammar, render it, diff it against what
+          is live, and decide knowingly.
+        '';
+      };
+
+      raw = lib.mkOption {
+        type = lib.types.listOf lib.types.str;
+        default = [ ];
+        description = ''
+          YAML documents rendered alongside this app's objects and passed
+          through: no typed options, no schema defaults injected, no scanning
+          (they are re-serialized, so key ORDER is normalized — the content is
+          not). THE ESCAPE HATCH, and on purpose — for the objects this
+          vocabulary has no term
+          for (a wake-front CR, a ConfigMap, an operator's CRD), because a
+          grammar that cannot accommodate the awkward case is one people
+          abandon at the first awkward case.
+
+          Two things keep it honest rather than a hole. It is VISIBLE: every app
+          using it warns at render, and `appPlatform.rawEscapeHatchApps` lists
+          them, so "how much of this cluster is still untyped" has a number.
+          And it is for WHOLE OBJECTS only — to change a field on something this
+          module renders, define it on the object instead
+          (`applications.<app>.resources...`), which keeps the change typed and
+          checked.
         '';
       };
     };
@@ -448,46 +710,113 @@ let
   ## Rendering
   ## ---------------------------------------------------------------------
 
+  # Env from three sources, merged into one attrset keyed by variable name:
+  # plain values, and per-key secret references. Collisions are rejected.
+  secretKeyEnv = app:
+    lib.concatMapAttrs
+      (_: sec: lib.mapAttrs
+        (_: key: {
+          valueFrom.secretKeyRef = { name = sec.secret; inherit key; }
+            // lib.optionalAttrs sec.optional { optional = true; };
+        })
+        sec.env)
+      app.secrets;
+
+  containerEnv = app:
+    lib.mapAttrs (_: value: { inherit value; }) app.env // secretKeyEnv app;
+
+  envFromSources = app:
+    map
+      (sec: { secretRef = { name = sec.secret; } // lib.optionalAttrs sec.optional { optional = true; }; })
+      (lib.filter (sec: sec.envFrom) (secretEntries app));
+
+  mkProbe = app: probe:
+    (if probe.path == null
+    then { tcpSocket.port = app.ports.${probe.port}.number; }
+    else {
+      httpGet = { inherit (probe) path; port = app.ports.${probe.port}.number; };
+    })
+    // {
+      inherit (probe) periodSeconds failureThreshold timeoutSeconds;
+    }
+    // lib.optionalAttrs (probe.initialDelaySeconds > 0) {
+      inherit (probe) initialDelaySeconds;
+    };
+
+  volumesOf = app:
+    lib.mapAttrs
+      (vname: st:
+        { name = vname; }
+        // (if st.claim != null
+        then { persistentVolumeClaim.claimName = st.claim; }
+        else { hostPath = { path = st.hostPath; type = st.hostPathType; }; }))
+      app.state
+    // lib.concatMapAttrs
+      (sname: sec: lib.optionalAttrs (sec.mountPath != null) {
+        "secret-${sname}" = {
+          name = "secret-${sname}";
+          secret = { secretName = sec.secret; }
+          // lib.optionalAttrs sec.optional { optional = true; };
+        };
+      })
+      app.secrets;
+
+  volumeMountsOf = app:
+    lib.mapAttrs
+      (vname: st: { name = vname; inherit (st) mountPath; }
+      // lib.optionalAttrs st.readOnly { readOnly = true; })
+      app.state
+    // lib.concatMapAttrs
+      (sname: sec: lib.optionalAttrs (sec.mountPath != null) {
+        "secret-${sname}" = {
+          name = "secret-${sname}";
+          inherit (sec) mountPath;
+          readOnly = true;
+        };
+      })
+      app.secrets;
+
   # Empty collections are left UNDEFINED rather than defined-and-empty: nixidy
   # drops a null field but renders `env: []`, and this spine's whole premise is
   # that a human reads and diffs the rendered tree.
-  mkContainer = app: {
-    image = app.image;
-  }
-  // lib.optionalAttrs (app.env != { }) {
-    env = lib.mapAttrs (_: value: { inherit value; }) app.env;
-  }
-  // lib.optionalAttrs (app.ports != { }) {
-    ports = lib.mapAttrs
-      (pname: port: {
-        name = pname;
-        containerPort = port.number;
-        inherit (port) protocol;
-      })
-      app.ports;
-  }
-  // lib.optionalAttrs (app.state != { }) {
-    volumeMounts = lib.mapAttrs
-      (vname: st: { name = vname; inherit (st) mountPath; }
-        // lib.optionalAttrs st.readOnly { readOnly = true; })
-      app.state;
-  }
-  // lib.optionalAttrs (app.command != [ ]) { command = app.command; }
-  // lib.optionalAttrs (app.args != [ ]) { args = app.args; }
-  // lib.optionalAttrs (gpuLimits app != { }) {
-    # Requests are set to the same value on purpose: a device plugin resource
-    # is integer-only and non-overcommittable, so limit and request must agree.
-    resources = { limits = gpuLimits app; requests = gpuLimits app; };
-  }
-  // lib.optionalAttrs (app.probe != null) {
-    readinessProbe = {
-      httpGet = {
-        inherit (app.probe) path;
-        port = app.ports.${app.probe.port}.number;
-      };
-      inherit (app.probe) initialDelaySeconds periodSeconds;
+  mkContainer = app:
+    let
+      # A device-plugin resource is integer-only and non-overcommittable, so
+      # the request is stated alongside the limit rather than left to be
+      # inferred.
+      limits = app.resources.limits // gpuLimits app;
+      requests = app.resources.requests // gpuLimits app;
+      mounts = volumeMountsOf app;
+    in
+    { image = app.image; }
+    // lib.optionalAttrs (containerEnv app != { }) { env = containerEnv app; }
+    // lib.optionalAttrs (envFromSources app != [ ]) { envFrom = envFromSources app; }
+    // lib.optionalAttrs (app.ports != { }) {
+      ports = lib.mapAttrs
+        (pname: port: {
+          name = pname;
+          containerPort = port.number;
+          inherit (port) protocol;
+        })
+        app.ports;
+    }
+    // lib.optionalAttrs (mounts != { }) { volumeMounts = mounts; }
+    // lib.optionalAttrs (app.command != [ ]) { command = app.command; }
+    // lib.optionalAttrs (app.args != [ ]) { args = app.args; }
+    // lib.optionalAttrs (requests != { } || limits != { }) {
+      resources =
+        lib.optionalAttrs (requests != { }) { inherit requests; }
+        // lib.optionalAttrs (limits != { }) { inherit limits; };
+    }
+    // lib.optionalAttrs (app.probes.readiness != null) {
+      readinessProbe = mkProbe app app.probes.readiness;
+    }
+    // lib.optionalAttrs (app.probes.liveness != null) {
+      livenessProbe = mkProbe app app.probes.liveness;
+    }
+    // lib.optionalAttrs (app.probes.startup != null) {
+      startupProbe = mkProbe app app.probes.startup;
     };
-  };
 
   mkDeployment = app: {
     metadata.labels = labelsOf app;
@@ -501,13 +830,11 @@ let
         spec = {
           containers.${app.name} = mkContainer app;
         }
-        // lib.optionalAttrs (app.state != { }) {
-          volumes = lib.mapAttrs
-            (vname: st: {
-              name = vname;
-              persistentVolumeClaim.claimName = st.claim;
-            })
-            app.state;
+        // lib.optionalAttrs (volumesOf app != { }) { volumes = volumesOf app; }
+        # A hostPath-backed app can only run where the path is. Saying so
+        # explicitly beats letting the scheduler find that out.
+        // lib.optionalAttrs (nodePinned app && platform.hostPathNodeSelector != { }) {
+          nodeSelector = platform.hostPathNodeSelector;
         };
       };
     };
@@ -532,7 +859,7 @@ let
     };
   };
 
-  mkNamespace = app: {
+  mkNamespace = _app: {
     # LESSON 2, stamped explicitly rather than inherited: a namespace holding
     # live contents that Argo CD reads as no-longer-desired takes everything
     # inside it with it. No option turns this off.
@@ -571,21 +898,58 @@ let
         + "or anchor it in the tenancy layer and set `createNamespace = false` on all of them.";
     }
     {
-      assertion = lib.all (st: !(lib.hasInfix "/" st.claim)) (lib.attrValues app.state);
+      assertion = lib.all (st: (st.claim == null) != (st.hostPath == null)) (stateEntries app);
       message =
-        "app `${app.name}` gives a claim value containing `/`. `state.<name>.claim` is the NAME of an "
-        + "existing PersistentVolumeClaim, never a path — which storage backs it is a fleet fact, "
-        + "allocated outside this declaration.";
+        "app `${app.name}` has a `state` entry backed by neither or both of `claim` and `hostPath`. "
+        + "State needs exactly one backing: an existing claim by name, or a path on the node.";
     }
     {
-      assertion = lib.all (st: lib.hasPrefix "/" st.mountPath) (lib.attrValues app.state);
+      assertion = lib.all (st: st.claim == null || !(lib.hasInfix "/" st.claim)) (stateEntries app);
+      message =
+        "app `${app.name}` gives a claim value containing `/`. `state.<name>.claim` is the NAME of an "
+        + "existing PersistentVolumeClaim; if you meant a directory on the node, that is `hostPath`.";
+    }
+    {
+      assertion = lib.all (st: st.hostPath == null || lib.hasPrefix "/" st.hostPath) (stateEntries app);
+      message = "app `${app.name}` has a `state.<name>.hostPath` that is not absolute.";
+    }
+    {
+      assertion = lib.all (st: lib.hasPrefix "/" st.mountPath) (stateEntries app);
       message = "app `${app.name}` has a `state.<name>.mountPath` that is not absolute.";
     }
     {
-      assertion = app.probe == null || (app.ports ? ${app.probe.port});
+      assertion = lib.all (sec: !(lib.hasInfix "/" sec.secret)) (secretEntries app);
       message =
-        "app `${app.name}` probes port `${lib.optionalString (app.probe != null) app.probe.port}`, "
-        + "which it does not declare in `ports`.";
+        "app `${app.name}` gives a secret value containing `/`. `secrets.<name>.secret` is the NAME of an "
+        + "existing Secret — never a path, and never the content.";
+    }
+    {
+      assertion = lib.all
+        (sec: sec.envFrom || sec.env != { } || sec.mountPath != null)
+        (secretEntries app);
+      message =
+        "app `${app.name}` references a Secret without consuming it. Set `envFrom`, name keys in `env`, "
+        + "or give a `mountPath` — a reference nothing reads is a typo, not a declaration.";
+    }
+    {
+      assertion = lib.all
+        (sec: sec.mountPath == null || lib.hasPrefix "/" sec.mountPath)
+        (secretEntries app);
+      message = "app `${app.name}` has a `secrets.<name>.mountPath` that is not absolute.";
+    }
+    {
+      assertion = lib.intersectLists (lib.attrNames app.env) (lib.attrNames (secretKeyEnv app)) == [ ];
+      message =
+        "app `${app.name}` defines these variables both in `env` and from a Secret: "
+        + lib.concatStringsSep ", " (lib.intersectLists (lib.attrNames app.env) (lib.attrNames (secretKeyEnv app)))
+        + ". One of them would silently win.";
+    }
+    {
+      assertion = lib.all
+        (probe: probe == null || (app.ports ? ${probe.port}))
+        (lib.attrValues app.probes);
+      message =
+        "app `${app.name}` probes a port it does not declare in `ports`.";
     }
     {
       assertion = app.exposure == "internal" || app.ports != { };
@@ -631,6 +995,25 @@ let
         "app `${app.name}` uses an unpinned image (`${app.image}`). Two syncs of an identical rendered "
         + "tree can then run different code, which is exactly what this spine exists to prevent.";
     }
+    {
+      when = nodePinned app && platform.hostPathNodeSelector == { };
+      message =
+        "app `${app.name}` keeps state on a node path, which pins it to the node holding that path, but "
+        + "`nixk3s.appPlatform.hostPathNodeSelector` is unset so nothing says so. On one node this is "
+        + "invisible; on two, the app can start on the wrong one against an empty directory.";
+    }
+    {
+      when = nodePinned app && app.scaling == "always" && app.replicas > 1;
+      message =
+        "app `${app.name}` runs ${toString app.replicas} replicas on node-path state. They share one "
+        + "directory with no coordination — which for anything that writes is corruption, not scale.";
+    }
+    {
+      when = app.raw != [ ];
+      message =
+        "app `${app.name}` passes ${toString (lib.length app.raw)} verbatim manifest(s) through the escape "
+        + "hatch. Nothing types or checks those, including the boundary this grammar otherwise enforces.";
+    }
   ];
 
   mkApplication = app: {
@@ -641,6 +1024,13 @@ let
       services.${app.name} = lib.mkIf (app.ports != { }) (mkService app);
       namespaces.${app.namespace} = lib.mkIf app.createNamespace (mkNamespace app);
     };
+
+    yamls = app.raw;
+
+    # Adoption of objects something else already applied: server-side apply and
+    # diff, so Argo compares against what the API server actually holds.
+    syncPolicy.syncOptions.serverSideApply = lib.mkIf app.adopt true;
+    compareOptions.serverSideDiff = lib.mkIf app.adopt true;
 
     # The wake front owns the replica count of a sleeping app; without this,
     # every sync resets it to whatever the manifest says and the app is woken
@@ -675,8 +1065,8 @@ in
       default = "nixk3s.dev";
       description = ''
         DNS-style prefix for this grammar's own labels (`<prefix>/exposure`,
-        `/scaling`, `/wake`, `/gpu`). Override it to a domain you control if
-        you would rather not carry this one into your manifests.
+        `/scaling`, `/wake`, `/gpu`, `/node-pinned`). Override it to a domain
+        you control if you would rather not carry this one into your manifests.
       '';
     };
 
@@ -692,6 +1082,36 @@ in
         device — so an app with `gpu = true` fails eval until this is named.
       '';
     };
+
+    hostPathNodeSelector = lib.mkOption {
+      type = lib.types.attrsOf lib.types.str;
+      default = { };
+      example = lib.literalExpression ''{ "kubernetes.io/hostname" = "the-node-with-the-disks"; }'';
+      description = ''
+        Node selector stamped on every app whose `state` is backed by a node
+        path. Which node that is happens to be a fleet fact, so it is set once,
+        privately, instead of appearing in each app.
+
+        Empty by default (a single-node cluster does not need it) and warned
+        about per app, because the pin exists whether or not it is written down:
+        the path only exists on one node, and a second node turns an implicit
+        pin into an app that starts in the wrong place against an empty
+        directory.
+      '';
+    };
+
+    rawEscapeHatchApps = lib.mkOption {
+      type = lib.types.listOf lib.types.str;
+      readOnly = true;
+      default = lib.attrNames (lib.filterAttrs (_: app: app.raw != [ ]) enabledApps);
+      defaultText = lib.literalExpression "every enabled app with a non-empty `raw`";
+      description = ''
+        Apps still carrying verbatim manifests through the `raw` escape hatch.
+        Read-only, and the point of it is that it is COUNTABLE: an escape hatch
+        nobody measures becomes the architecture. A consumer can assert on this
+        list to keep the number going down.
+      '';
+    };
   };
 
   options.nixk3s.apps = lib.mkOption {
@@ -699,14 +1119,16 @@ in
     default = { };
     description = ''
       Apps, keyed by name. Each declares WHAT IT NEEDS — an image, ports, an
-      exposure class, whether it scales to zero, which existing claims hold its
-      state — and this module renders the Argo CD Application, an optional
-      Namespace, a Deployment and (when it has ports) a Service.
+      exposure class, whether it scales to zero, which existing claims or node
+      paths hold its state, which existing Secrets it consumes — and this module
+      renders the Argo CD Application, an optional Namespace, a Deployment and
+      (when it has ports) a Service.
 
-      The vocabulary is deliberately need-shaped and number-free, which is what
-      lets it live in a public repository: nothing here can express an address,
-      a slot, a UID or a storage path. See the header of this module for the
-      boundary in full.
+      The vocabulary is need-shaped: a declaration written against it names
+      objects and classes, and takes any fleet fact as a parameter its consumer
+      supplies. See the header of this module for the boundary in full, and for
+      the two ways out of the grammar when an app needs something it has no term
+      for.
     '';
     example = lib.literalExpression ''
       {
@@ -716,6 +1138,8 @@ in
           ports.http.number = 8080;
           exposure = "public";
           state.data = { claim = "example-app-data"; mountPath = "/data"; };
+          secrets.credentials.env.APP_PASSWORD = "password";
+          probes.readiness = { port = "http"; path = "/healthz"; };
         };
       }
     '';

@@ -145,7 +145,7 @@
           <tr><td><code>k3s-host</code></td><td>The NixOS side: k3s server with sane bare-metal defaults, declarative node labels, airgap image import, storage-path conventions. Landed.</td></tr>
           <tr><td><code>SPINE.md</code></td><td>The nixidy environment pattern plus Argo CD bootstrap: render &rarr; commit &rarr; sync, with the rendered tree excluded from the render trigger so it never loops. Landed as a doc.</td></tr>
           <tr><td><code>tenancy</code></td><td>The AppProject model and its allowed-destination conventions. Landed.</td></tr>
-          <tr><td><code>apps</code></td><td>The app grammar: an app declares what it NEEDS &mdash; image, ports, an exposure class, whether it scales to zero, which existing claims hold its state &mdash; and the module renders the Application, an optional Namespace, a Deployment and a Service. Number-free by construction: no address, slot, UID or storage path can be written in it. Landed.</td></tr>
+          <tr><td><code>apps</code></td><td>The app grammar: an app declares what it NEEDS &mdash; image, ports, an exposure class, whether it scales to zero, which existing claims or node paths hold its state, which existing Secrets it consumes &mdash; and the module renders the Application, an optional Namespace, a Deployment and a Service. Options are parameters: it names objects and classes and takes every fleet fact from its consumer, so a declaration written against it is safe to publish. Landed.</td></tr>
         </tbody>
       </table>
     </div>

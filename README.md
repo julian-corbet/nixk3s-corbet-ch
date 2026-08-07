@@ -34,11 +34,13 @@ production-lived answer:
   model and its allowed-destination conventions.
 - **`apps`** ([`nixidyModules.apps`](modules/apps), landed) — the app grammar:
   an app declares what it NEEDS (an image, ports, an exposure class, whether it
-  scales to zero, which existing claims hold its state) and this renders the
-  Application, an optional Namespace, a Deployment and a Service. The
-  vocabulary is deliberately number-free — no address, slot, UID or storage
-  path can be written in it — which is what lets it be public while the
-  clusters it renders for stay private.
+  scales to zero, which existing claims or node paths hold its state, which
+  existing Secrets it consumes) and this renders the Application, an optional
+  Namespace, a Deployment and a Service. Options are parameters: the vocabulary
+  names objects and classes and takes every fleet fact from its consumer, which
+  is what lets it be public while the clusters it renders for stay private.
+  Two visible ways out for what it has no term for — a typed merge onto the
+  objects it renders, and a countable `raw` escape hatch.
 - **[docs/SPINE.md](docs/SPINE.md)** (landed) — the GitOps spine pattern:
   nixidy render → commit → Argo CD sync, with the rendered tree excluded from
   the render trigger (no loops).
@@ -61,13 +63,16 @@ seconds: `nix flake check` renders `tenancy` and `apps` through real nixidy and
 composes `k3s-host` into a NixOS system, from the placeholder configs in
 [examples/](examples). All are proven in the failing direction too — a bad
 `role` value and an undefined tenancy option each fail the corresponding check,
-and the app grammar's twelve guards each get a declaration that violates them
+and the app grammar's twenty guards each get a declaration that violates them
 and must be refused, against a control declaration that must render.
 
 `apps` goes one step further than evaluating: `checks/apps-render.nix` parses
 the manifests the grammar actually produced and asserts them field by field,
 because a module that type-checks can still render a Deployment whose selector
-misses its own pods — not an eval error, just an outage.
+misses its own pods — not an eval error, just an outage. The same check renders
+an example private overlay on top of the grammar and asserts that a consumer's
+own fields (a pinned address, an identity, a pod-spec knob the vocabulary has no
+term for) land on the objects without displacing what the grammar rendered.
 
 Until this landed, `nixidy` was not a flake input here and there was no `checks`
 output at all, so nothing in CI evaluated either module. That never made the

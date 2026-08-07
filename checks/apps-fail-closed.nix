@@ -62,13 +62,47 @@ let
     ipv6-literal-in-env =
       goodApp // { env.EXAMPLE_PEER = "fd00::42"; };
 
-    # A storage path wearing a claim name's clothes.
+    # A storage path wearing a claim name's clothes. `hostPath` is the term for
+    # a path, and it is a different thing with different consequences.
     claim-that-is-really-a-path =
       goodApp // { state.data = { claim = "/example/pool/appdata/example-app"; mountPath = "/data"; }; };
 
+    # State needs exactly one backing — neither is not storage, and both is two
+    # answers to a question with one answer.
+    state-with-no-backing =
+      goodApp // { state.data = { mountPath = "/data"; }; };
+
+    state-with-both-backings =
+      goodApp // {
+        state.data = { claim = "example-data"; hostPath = "/example/data"; mountPath = "/data"; };
+      };
+
+    hostpath-that-is-not-absolute =
+      goodApp // { state.data = { hostPath = "example/data"; mountPath = "/data"; }; };
+
+    # Secrets: named, consumed, and never a path or a value.
+    secret-that-is-really-a-path =
+      goodApp // { secrets.creds = { secret = "/example/secrets/app.env"; envFrom = true; }; };
+
+    secret-referenced-but-never-consumed =
+      goodApp // { secrets.creds = { secret = "example-app-credentials"; }; };
+
+    secret-mount-that-is-not-absolute =
+      goodApp // { secrets.creds = { secret = "example-app-credentials"; mountPath = "run/creds"; }; };
+
+    # One variable, two sources: whichever wins, it is not what was meant.
+    env-and-secret-collide-on-one-variable =
+      goodApp // {
+        env.EXAMPLE_TOKEN = "plain";
+        secrets.creds.env.EXAMPLE_TOKEN = "token";
+      };
+
     # Guards against rendering something that cannot work.
     probe-on-an-undeclared-port =
-      goodApp // { probe.port = "nonexistent"; };
+      goodApp // { probes.readiness.port = "nonexistent"; };
+
+    liveness-probe-on-an-undeclared-port =
+      goodApp // { probes.liveness.port = "nonexistent"; };
 
     exposed-with-nothing-to-expose =
       { namespace = "example-apps"; image = goodApp.image; exposure = "public"; };
