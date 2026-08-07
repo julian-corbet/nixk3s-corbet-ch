@@ -34,9 +34,13 @@
         default = self.nixosModules.k3s-host;
       };
       nixidyModules = {
+        apps = ./modules/apps;
         tenancy = ./modules/tenancy;
-        # Only module in this class - trivially the default.
-        default = self.nixidyModules.tenancy;
+        # Both modules of this class: the app grammar, and the tenancy model it
+        # renders its Applications into. They are independent — either works
+        # alone — but importing both is what makes the destinations interlock
+        # checkable, so the default carries the pair.
+        default = { imports = [ ./modules/apps ./modules/tenancy ]; };
       };
 
       lib = { };
@@ -67,6 +71,25 @@
         in
         {
           tenancy-renders = env.environmentPackage;
+
+          # 3. The app grammar, asserted against the manifests it actually
+          # PRODUCED — not merely evaluated. A grammar that type-checks and
+          # renders a Deployment whose selector misses its own pods is worth
+          # nothing, and only a parser looking at the output can tell.
+          apps-render = import ./checks/apps-render.nix {
+            inherit pkgs;
+            environmentPackage = env.environmentPackage;
+          };
+
+          # 4. The same grammar in the failing direction: every guard it makes
+          # (the tenancy destinations interlock, the address-literal boundary,
+          # claims-are-not-paths, the GPU wake front) gets a declaration that
+          # violates it and must be refused.
+          apps-fail-closed = import ./checks/apps-fail-closed.nix {
+            inherit pkgs lib nixidy;
+            appsModule = self.nixidyModules.apps;
+            tenancyModule = self.nixidyModules.tenancy;
+          };
 
           # Forcing the derivation PATH evaluates the whole NixOS configuration —
           # every option, assertion and type check the module participates in —

@@ -28,7 +28,10 @@
       # module refuses to guess it.
       management.destinationNamespaces = [ "argocd" "example-platform" ];
       advanced.destinationNamespaces = [ "example-gpu" ];
-      apps.destinationNamespaces = [ "example-apps" ];
+      # Every namespace the apps below land in appears here, because that is the
+      # interlock: an app whose namespace is missing from its project's list
+      # fails eval in this repository instead of failing to sync in a cluster.
+      apps.destinationNamespaces = [ "example-apps" "example-worker" ];
 
       # A fourth project, added purely to prove the model EXTENDS rather than
       # being replaced: attrsOf definitions merge attr-by-attr, so adding a
@@ -43,6 +46,55 @@
         # first targets one creates it — so this is deliberately the exception.
         namespaces.example-tenant = { };
       };
+    };
+  };
+
+  # The GPU app below needs a device, and the grammar refuses to guess what this
+  # cluster calls one — so the example names it, generically.
+  nixk3s.appPlatform.gpuResourceName = "example.com/gpu";
+
+  # Three apps, chosen to cover the paths that differ in what gets RENDERED, not
+  # merely in what evaluates: an always-on exposed app with a probe, a
+  # scale-to-zero GPU app with state, and a portless worker that owns its own
+  # namespace.
+  nixk3s.apps = {
+    # Always-on, publicly exposed, digest-pinned, with a readiness probe.
+    example-web = {
+      namespace = "example-apps";
+      image = "registry.example.com/example-org/example-web:1.4.2@sha256:0000000000000000000000000000000000000000000000000000000000000000";
+      ports.http.number = 8080;
+      exposure = "public";
+      replicas = 2;
+      probe = { port = "http"; path = "/healthz"; };
+      # A container-local bind address: allowed on purpose. The address guard
+      # rejects fleet addresses, not the fact that a server binds to any
+      # interface inside its own container.
+      env.EXAMPLE_BIND_ADDRESS = "0.0.0.0";
+    };
+
+    # Scale-to-zero, needs the GPU (so the wake front resolves to sablier
+    # without being named), and mounts an existing claim BY NAME.
+    example-canvas = {
+      namespace = "example-gpu";
+      project = "advanced";
+      # Deliberately tag-only, so the render check sees the unpinned-image
+      # warning fire as well as the pinned path above.
+      image = "registry.example.com/example-org/example-canvas:2026.8";
+      ports.http.number = 8188;
+      exposure = "nb";
+      scaling = "scale-to-zero";
+      gpu = true;
+      state.config = { claim = "example-canvas-config"; mountPath = "/config"; };
+    };
+
+    # No ports at all: renders a Deployment and no Service. Creates its own
+    # namespace, which is therefore stamped Prune=false.
+    example-worker = {
+      namespace = "example-worker";
+      createNamespace = true;
+      image = "registry.example.com/example-org/example-worker:0.3.0@sha256:1111111111111111111111111111111111111111111111111111111111111111";
+      command = [ "/bin/example-worker" ];
+      args = [ "--queue" "example" ];
     };
   };
 }

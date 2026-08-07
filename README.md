@@ -32,6 +32,13 @@ production-lived answer:
   import.
 - **`tenancy`** (`nixidyModules.tenancy`, landed) — the AppProject tenancy
   model and its allowed-destination conventions.
+- **`apps`** ([`nixidyModules.apps`](modules/apps), landed) — the app grammar:
+  an app declares what it NEEDS (an image, ports, an exposure class, whether it
+  scales to zero, which existing claims hold its state) and this renders the
+  Application, an optional Namespace, a Deployment and a Service. The
+  vocabulary is deliberately number-free — no address, slot, UID or storage
+  path can be written in it — which is what lets it be public while the
+  clusters it renders for stay private.
 - **[docs/SPINE.md](docs/SPINE.md)** (landed) — the GitOps spine pattern:
   nixidy render → commit → Argo CD sync, with the rendered tree excluded from
   the render trigger (no loops).
@@ -41,17 +48,26 @@ production-lived answer:
 **Pre-alpha, fully dogfooded.** The spine is real: it runs a production
 single-node cluster (15+ Argo applications, GPU workloads, the whole works)
 and has survived node rebuilds and a bare-metal migration — and since
-2026-07-22 that cluster runs BOTH modules from this repo: its k3s server
-config comes from `k3s-host`, and its entire Argo CD project layer (11
-AppProjects + 5 protected namespace anchors) is rendered by `tenancy`,
+2026-07-22 that cluster runs the host and tenancy modules from this repo: its
+k3s server config comes from `k3s-host`, and its entire Argo CD project layer
+(11 AppProjects + 5 protected namespace anchors) is rendered by `tenancy`,
 adopted in-place with a semantically-verified zero-drift cutover (the
-module + consumer values reproduced the live objects field-exactly).
+module + consumer values reproduced the live objects field-exactly). `apps` is
+newer: its vocabulary is extracted from that cluster's app layer, but it has
+not yet replaced it.
 
-The repository can now also demonstrate that both modules evaluate, on its own,
-in under four seconds: `nix flake check` renders `tenancy` through real nixidy and
+The repository can also demonstrate that its modules evaluate, on its own, in
+seconds: `nix flake check` renders `tenancy` and `apps` through real nixidy and
 composes `k3s-host` into a NixOS system, from the placeholder configs in
-[examples/](examples). Both are proven in the failing direction too — a bad
-`role` value and an undefined tenancy option each fail the corresponding check.
+[examples/](examples). All are proven in the failing direction too — a bad
+`role` value and an undefined tenancy option each fail the corresponding check,
+and the app grammar's twelve guards each get a declaration that violates them
+and must be refused, against a control declaration that must render.
+
+`apps` goes one step further than evaluating: `checks/apps-render.nix` parses
+the manifests the grammar actually produced and asserts them field by field,
+because a module that type-checks can still render a Deployment whose selector
+misses its own pods — not an eval error, just an outage.
 
 Until this landed, `nixidy` was not a flake input here and there was no `checks`
 output at all, so nothing in CI evaluated either module. That never made the
