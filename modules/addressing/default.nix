@@ -156,10 +156,13 @@ let
   # therefore not a term at all.
   addressable = app: (app.ports or { }) != { };
 
-  # Never interpolate a nullable straight into a message: an assertion's message
-  # is a typed string, so it is forced whether or not the assertion holds — a
-  # message that only works when its own assertion fails takes the whole
-  # evaluation down with a `null` coercion instead of reporting anything.
+  # Never interpolate a nullable straight into a message. The module system
+  # keeps only the FAILING assertions and formats those messages, so a message
+  # is evaluated at exactly the moment its own assertion has failed — and one
+  # that coerces a `null` there takes the whole evaluation down instead of
+  # reporting anything. The same filtering is why a value mentioned only in a
+  # message is never forced, and therefore never type-checked: whatever an
+  # assertion wants checked has to appear in its `assertion` expression.
   showOrigin = app: if app.origin == null then "(unset)" else "`${app.origin}`";
   originName = app: if app.origin == null then "<origin>" else app.origin;
   showSlot = app: if app.slot == null then "(none)" else toString app.slot;
