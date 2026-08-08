@@ -11,7 +11,10 @@
 #     apps on one slot, two bands over one slot, and a full band each fail eval;
 #   - the MESSAGE, asserted by content: an out-of-band slot is only actionable
 #     if the refusal names the app, the number, where it landed and where it
-#     belongs, so the check reads the text and requires all four.
+#     belongs, so the check reads the text and requires all four;
+#   - the GRAMMAR, in both states of `enable`: an ill-typed slot, origin or band
+#     description is refused with the model switched off as well as on, because
+#     a type that only holds while a flag is set is not a type.
 #
 # Every band, base and slot below is invented for this file. The module ships
 # none, and neither does this check: what is being verified is the mechanism.
@@ -137,6 +140,71 @@ let
     lib.attrNames (lib.filterAttrs (_: values: failures values == [ ]) mustFail);
 
   ## ---------------------------------------------------------------------
+  ## The grammar, which `enable` does not govern
+  ##
+  ## `enable` switches on the POLICY — bind a band, sit inside it, do not run
+  ## out of room. It does not switch off the TYPE of a declaration, so each case
+  ## below must be refused in BOTH states of the flag. Before that split
+  ## existed, a repository that had not turned the model on yet accepted
+  ## `slot = "soon"` and rendered green, and met every one of them at once on
+  ## the day somebody enabled it.
+  ##
+  ## These go through `renders` alone and never through `failures`: an ill-typed
+  ## definition throws while the assertion list is being BUILT, so there is no
+  ## message to read and asking for one would throw rather than return. Which is
+  ## also why `silentlyRefused` above must not be extended to cover them.
+  ## ---------------------------------------------------------------------
+
+  mkEnvOff = values: nixidy.lib.mkEnv {
+    inherit pkgs;
+    modules = [
+      appsModule
+      addressingModule
+      base
+      { nixk3s.addressing.enable = lib.mkForce false; }
+      values
+    ];
+  };
+
+  rendersOff = values:
+    (builtins.tryEval (builtins.seq (mkEnvOff values).environmentPackage.drvPath true)).success;
+
+  illTyped = {
+    slot-that-is-not-a-number = {
+      nixk3s.apps.example-control = goodApp // { slot = "thirty-three"; };
+    };
+
+    origin-that-is-not-a-name = {
+      nixk3s.apps.example-control = goodApp // { origin = 1; };
+    };
+
+    # THE MESSAGE-ONLY SHAPE, which a search for unrendered options misses:
+    # `description` is read by `showBand` and by nothing else, and `showBand`'s
+    # own callers are all assertion and warning messages — which the module
+    # system formats only for the assertions that have already failed. So the
+    # option was declared, typed, accepted, and never once evaluated.
+    band-description-that-is-not-a-string = {
+      nixk3s.apps.example-control = goodApp;
+      nixk3s.addressing.bands.example-alpha.description = lib.mkForce 12345;
+    };
+
+    # The same hole, proven the other way round: a value that cannot be
+    # evaluated at all is indistinguishable from a good one until something
+    # evaluates it.
+    band-description-that-throws = {
+      nixk3s.apps.example-control = goodApp;
+      nixk3s.addressing.bands.example-alpha.description =
+        lib.mkForce (throw "a description nothing reads is a description nothing checks");
+    };
+  };
+
+  wronglyRenderedIllTyped =
+    lib.attrNames (lib.filterAttrs (_: v: v) (lib.mapAttrs (_: renders) illTyped));
+
+  wronglyRenderedIllTypedWhileOff =
+    lib.attrNames (lib.filterAttrs (_: v: v) (lib.mapAttrs (_: rendersOff) illTyped));
+
+  ## ---------------------------------------------------------------------
   ## What the refusal SAYS
   ## ---------------------------------------------------------------------
 
@@ -179,6 +247,12 @@ let
   };
 
   controlRenders = renders goodValues;
+
+  # The same declaration with the model switched off. Without it, "everything
+  # fails while `enable` is false" would read as proof that the grammar is
+  # checked there — a check that refuses every declaration proves only that it
+  # is a wall.
+  controlRendersWhileOff = rendersOff goodValues;
 
   report = (mkEnv goodValues).config.nixk3s.addressing.report;
 
@@ -261,44 +335,60 @@ let
 in
 lib.throwIf (!controlRenders)
   "nixk3s.addressing: the control declaration does not render, so every negative case below proves nothing."
-  (lib.throwIf (wronglyRendered != [ ])
-    ("nixk3s.addressing rendered declarations it must have refused: "
-      + lib.concatStringsSep ", " wronglyRendered)
-    (lib.throwIf (silentlyRefused != [ ])
-      ("nixk3s.addressing refused these without an assertion message, so something other than its own "
-        + "guards stopped them: " + lib.concatStringsSep ", " silentlyRefused)
-      (lib.throwIf (missingFromMessage != [ ])
-        ("nixk3s.addressing refused an out-of-band slot with a message that never says "
-          + lib.concatStringsSep ", " missingFromMessage + ":\n" + outOfBandMessage)
-        (lib.throwIf (missingFromFullMessage != [ ])
-          ("nixk3s.addressing refused an app on a full band without saying "
-            + lib.concatStringsSep ", " missingFromFullMessage + ":\n" + fullBandMessage)
-          (lib.throwIf (wrongFacts != [ ])
-            ("nixk3s.addressing reports the wrong occupancy: "
-              + lib.concatMapStringsSep "; "
-              (f: "${f.what}: expected ${f.expected}, got ${f.actual}")
-              wrongFacts)
-            (lib.throwIf (!fullBandHasNoNextSlot)
-              "nixk3s.addressing offers a next free slot in a band that is full."
-              (lib.throwIf (missingWarnings != [ ])
-                ("nixk3s.addressing never warned about " + lib.concatStringsSep ", " missingWarnings
-                  + ". What it warned about instead:\n" + warnedText)
-                (pkgs.writeText "nixk3s-addressing" ''
-                  the control renders, and the report counts it:
-                  ${lib.concatMapStringsSep "\n" (f: "  ok       ${f.what}: ${f.actual}") reportFacts}
+  (lib.throwIf (!controlRendersWhileOff)
+    ("nixk3s.addressing: the control declaration does not render with `enable = false`, so the grammar "
+      + "cases below prove only that the module refuses everything while it is switched off.")
+    (lib.throwIf (wronglyRenderedIllTyped != [ ])
+      ("nixk3s.addressing accepted ill-typed declarations with the band model ENABLED: "
+        + lib.concatStringsSep ", " wronglyRenderedIllTyped)
+      (lib.throwIf (wronglyRenderedIllTypedWhileOff != [ ])
+        ("nixk3s.addressing accepted ill-typed declarations with the band model DISABLED: "
+          + lib.concatStringsSep ", " wronglyRenderedIllTypedWhileOff
+          + ". A type that only holds while a flag is set is not a type — the value is being declared "
+          + "either way, and the repository that has not switched the model on yet is exactly the one "
+          + "accumulating the mistakes.")
+        (lib.throwIf (wronglyRendered != [ ])
+          ("nixk3s.addressing rendered declarations it must have refused: "
+            + lib.concatStringsSep ", " wronglyRendered)
+          (lib.throwIf (silentlyRefused != [ ])
+            ("nixk3s.addressing refused these without an assertion message, so something other than its own "
+              + "guards stopped them: " + lib.concatStringsSep ", " silentlyRefused)
+            (lib.throwIf (missingFromMessage != [ ])
+              ("nixk3s.addressing refused an out-of-band slot with a message that never says "
+                + lib.concatStringsSep ", " missingFromMessage + ":\n" + outOfBandMessage)
+              (lib.throwIf (missingFromFullMessage != [ ])
+                ("nixk3s.addressing refused an app on a full band without saying "
+                  + lib.concatStringsSep ", " missingFromFullMessage + ":\n" + fullBandMessage)
+                (lib.throwIf (wrongFacts != [ ])
+                  ("nixk3s.addressing reports the wrong occupancy: "
+                    + lib.concatMapStringsSep "; "
+                    (f: "${f.what}: expected ${f.expected}, got ${f.actual}")
+                    wrongFacts)
+                  (lib.throwIf (!fullBandHasNoNextSlot)
+                    "nixk3s.addressing offers a next free slot in a band that is full."
+                    (lib.throwIf (missingWarnings != [ ])
+                      ("nixk3s.addressing never warned about " + lib.concatStringsSep ", " missingWarnings
+                        + ". What it warned about instead:\n" + warnedText)
+                      (pkgs.writeText "nixk3s-addressing" ''
+                        the control renders, and the report counts it:
+                        ${lib.concatMapStringsSep "\n" (f: "  ok       ${f.what}: ${f.actual}") reportFacts}
 
-                  every guard fires:
-                  ${lib.concatMapStringsSep "\n" (n: "  refused  ${n}") (lib.attrNames mustFail)}
+                        every guard fires:
+                        ${lib.concatMapStringsSep "\n" (n: "  refused  ${n}") (lib.attrNames mustFail)}
 
-                  and it says why — the out-of-band slot:
+                        and the grammar is checked whether or not the model is enforced —
+                        each of these is refused with `enable` both true and false:
+                        ${lib.concatMapStringsSep "\n" (n: "  refused  ${n}") (lib.attrNames illTyped)}
 
-                  ${outOfBandMessage}
+                        and it says why — the out-of-band slot:
 
-                  the full band:
+                        ${outOfBandMessage}
 
-                  ${fullBandMessage}
+                        the full band:
 
-                  the warnings, before either becomes an error:
+                        ${fullBandMessage}
 
-                  ${warnedText}
-                ''))))))))
+                        the warnings, before either becomes an error:
+
+                        ${warnedText}
+                      '')))))))))))

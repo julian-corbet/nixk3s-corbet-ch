@@ -158,6 +158,16 @@ let
   stateEntries = app: lib.attrValues app.state;
   secretEntries = app: lib.attrValues app.secrets;
 
+  # Volumes carrying a `hostPathType` that no backing of theirs will ever read.
+  # `volumesOf` reads the field only on the hostPath side of an `if`, so on a
+  # claim-backed volume the value was discarded before anything forced it — and
+  # an option nothing forces is an option whose type is never checked. The
+  # predicate therefore reads it as its FIRST term, which forces it on both
+  # sides of that `if` rather than leaning on the render for one of them.
+  strayHostPathTypes = app:
+    lib.attrNames
+      (lib.filterAttrs (_: st: st.hostPathType != "Directory" && st.hostPath == null) app.state);
+
   # hostPath-backed state pins the pod to whichever node holds that path. On a
   # one-node cluster that is invisible; the day a second node joins it becomes
   # "the app runs, and silently reads a different (or empty) directory".
@@ -268,6 +278,10 @@ let
           refuses to start the pod when the path is missing, which is the safe
           answer for state that must already exist; `DirectoryOrCreate` creates
           an empty one, and is how an app silently comes up with no data.
+
+          FOR A HOSTPATH BACKING ONLY. Which storage backs a claim is decided
+          outside the app, so setting this beside a `claim` fails eval instead
+          of being dropped on the way to the manifest.
         '';
       };
 
@@ -561,7 +575,9 @@ let
         description = ''
           Replica count while running. Only meaningful with
           `scaling = "always"`; a scale-to-zero app's count belongs to its wake
-          front and this value is not rendered.
+          front and this value is not rendered — so declaring one there fails
+          eval rather than quietly rendering nothing, exactly like naming a
+          `wake` front on an always-on app.
         '';
       };
 
@@ -914,6 +930,22 @@ let
       message = "app `${app.name}` has a `state.<name>.hostPath` that is not absolute.";
     }
     {
+      # EXISTS FOR WHAT IT FORCES. `hostPathType` describes a directory on the
+      # node, so `volumesOf` reads it on the hostPath side of the backing `if`
+      # and nowhere else — which means a claim-backed volume's value was
+      # accepted, discarded, and never type-checked. `strayHostPathTypes` reads
+      # it for every entry, and the guard that falls out of the reading is real
+      # too: a `hostPathType` beside a claim is a fact about a backing this
+      # volume does not have, and nothing would ever render it.
+      assertion = strayHostPathTypes app == [ ];
+      message =
+        "app `${app.name}` sets `hostPathType` on claim-backed state ("
+        + lib.concatMapStringsSep ", " (n: "`state.${n}`") (strayHostPathTypes app)
+        + "). `hostPathType` describes a directory on the NODE; which storage backs a claim is decided "
+        + "outside the app, so the value would be dropped rather than honoured. Drop it, or back the "
+        + "volume with a `hostPath`.";
+    }
+    {
       assertion = lib.all (st: lib.hasPrefix "/" st.mountPath) (stateEntries app);
       message = "app `${app.name}` has a `state.<name>.mountPath` that is not absolute.";
     }
@@ -961,6 +993,23 @@ let
       message =
         "app `${app.name}` names a wake front but has `scaling = \"always\"`. An always-on app is never "
         + "asleep, so there is nothing to wake.";
+    }
+    {
+      # EXISTS FOR WHAT IT FORCES. `mkDeployment` renders `replicas` behind an
+      # `mkIf` on `scaling == "always"`, so on a scale-to-zero app the value is
+      # discarded unevaluated and its type is never checked — `replicas = "two"`
+      # rendered green. The count is the FIRST term on purpose: that forces it
+      # in both modes, so its type stops depending on the render still reading
+      # it in the other one.
+      #
+      # The guard it makes is the mirror of the `wake` one above: a count
+      # declared on an app that sleeps is a number nothing will ever render.
+      assertion = app.replicas == 1 || app.scaling == "always";
+      message =
+        "app `${app.name}` declares ${toString app.replicas} replicas but has "
+        + "`scaling = \"scale-to-zero\"`. The wake front owns the replica count of a sleeping app — this "
+        + "number is not rendered and never reaches the cluster. Drop it, or make the app "
+        + "`scaling = \"always\"`.";
     }
     {
       assertion = !(app.gpu && app.scaling == "scale-to-zero") || wakeFrontOf app == "sablier";

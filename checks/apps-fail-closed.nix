@@ -80,6 +80,31 @@ let
     hostpath-that-is-not-absolute =
       goodApp // { state.data = { hostPath = "example/data"; mountPath = "/data"; }; };
 
+    # A `hostPathType` on the backing that has no host path. `volumesOf` reads
+    # the field on the hostPath side of the backing choice and nowhere else, so
+    # this value used to be accepted, discarded, and — the part that matters —
+    # never type-checked. Both halves are cases here: the declaration that means
+    # nothing, and the one that is not even of the right type, because only the
+    # second proves the value is now FORCED rather than merely compared.
+    hostpath-type-on-claim-backed-state =
+      goodApp // {
+        state.data = { claim = "example-data"; mountPath = "/data"; hostPathType = "DirectoryOrCreate"; };
+      };
+
+    hostpath-type-outside-its-enum-on-claim-backed-state =
+      goodApp // {
+        state.data = { claim = "example-data"; mountPath = "/data"; hostPathType = "NotAKubernetesType"; };
+      };
+
+    # The same shape one level up: the Deployment renders `replicas` behind an
+    # `mkIf` on `scaling == "always"`, so a sleeping app's count is discarded
+    # before anything forces it, and any value at all used to render green.
+    replica-count-on-an-app-that-sleeps =
+      goodApp // { scaling = "scale-to-zero"; replicas = 2; };
+
+    replica-count-that-is-not-a-count-on-an-app-that-sleeps =
+      goodApp // { scaling = "scale-to-zero"; replicas = "two"; };
+
     # Secrets: named, consumed, and never a path or a value.
     secret-that-is-really-a-path =
       goodApp // { secrets.creds = { secret = "/example/secrets/app.env"; envFrom = true; }; };
@@ -114,15 +139,30 @@ let
       goodApp // { gpu = true; scaling = "scale-to-zero"; wake = "keda"; };
   };
 
-  # Same shape, nothing wrong. If this one fails, the harness is broken.
-  control = goodApp;
+  # Same shape, nothing wrong. If one of these fails, the harness is broken and
+  # every negative case above proves nothing.
+  #
+  # There are three because two of the cases perturb only a value the render
+  # DISCARDS, and a case refused for the wrong reason passes this check
+  # silently: without a sleeping control, "scale-to-zero was rejected at all"
+  # would read as proof that the replica count was checked, and without a
+  # claim-backed one the same goes for `hostPathType`.
+  controls = {
+    control = goodApp;
+    sleeping-control = goodApp // { scaling = "scale-to-zero"; };
+    claim-backed-control =
+      goodApp // { state.data = { claim = "example-data"; mountPath = "/data"; }; };
+  };
 
   wronglyRendered = lib.attrNames
     (lib.filterAttrs (_: v: v) (lib.mapAttrs
       (_: apps: renders { nixk3s.apps = apps; })
       mustFail));
 
-  controlRenders = renders { nixk3s.apps.example-control = control; };
+  brokenControls = lib.attrNames
+    (lib.filterAttrs (_: v: !v) (lib.mapAttrs
+      (_: app: renders { nixk3s.apps.example-control = app; })
+      controls));
 
   # A GPU app is also checked against a platform that has not named its device
   # resource — the "no silent default" guard, which needs a different base.
@@ -143,15 +183,19 @@ let
     in
     (builtins.tryEval (builtins.seq env.environmentPackage.drvPath true)).success;
 in
-lib.throwIf (!controlRenders)
-  "nixk3s.apps fail-closed check is broken: the control app does not render, so every negative case below proves nothing."
+lib.throwIf (brokenControls != [ ])
+  ("nixk3s.apps fail-closed check is broken: these control apps do not render, so every negative case "
+    + "below proves nothing: " + lib.concatStringsSep ", " brokenControls)
   (lib.throwIf (wronglyRendered != [ ])
     ("nixk3s.apps rendered declarations it must have refused: "
       + lib.concatStringsSep ", " wronglyRendered)
     (lib.throwIf gpuWithoutResourceName
       "nixk3s.apps rendered a GPU app while `appPlatform.gpuResourceName` was unset; the pod would schedule with no device and no error."
       (pkgs.writeText "nixk3s-apps-fail-closed" ''
-        control renders, and every guard fires:
+        the controls render:
+        ${lib.concatMapStringsSep "\n" (n: "  renders: ${n}") (lib.attrNames controls)}
+
+        and every guard fires:
         ${lib.concatMapStringsSep "\n" (n: "  refused: ${n}") (lib.attrNames mustFail)}
           refused: gpu-without-a-named-device-resource
       '')))

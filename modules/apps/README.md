@@ -229,23 +229,31 @@ rather than documented here:
 
 Every guard is checked in the failing direction by
 `checks/apps-fail-closed.nix` — a guard nobody has seen fire is a comment.
-Twenty declarations, each with exactly one thing wrong, must all be refused,
-against a control declaration that must render:
+Twenty-four declarations, each with exactly one thing wrong, must all be
+refused, against three control declarations that must render:
 
 ```
 control renders, and every guard fires:
-  refused: address-literal-in-env               refused: secret-mount-that-is-not-absolute
-  refused: address-literal-in-image-registry    refused: secret-referenced-but-never-consumed
-  refused: claim-that-is-really-a-path          refused: secret-that-is-really-a-path
-  refused: env-and-secret-collide-on-one-variable  refused: state-with-both-backings
-  refused: exposed-with-nothing-to-expose       refused: state-with-no-backing
-  refused: gpu-scale-to-zero-fronted-by-the-wrong-thing
-  refused: hostpath-that-is-not-absolute        refused: stranded-outside-project-destinations
+  refused: address-literal-in-env               refused: probe-on-an-undeclared-port
+  refused: address-literal-in-image-registry    refused: replica-count-on-an-app-that-sleeps
+  refused: claim-that-is-really-a-path          refused: replica-count-that-is-not-a-count-on-an-app-that-sleeps
+  refused: env-and-secret-collide-on-one-variable  refused: secret-mount-that-is-not-absolute
+  refused: exposed-with-nothing-to-expose       refused: secret-referenced-but-never-consumed
+  refused: gpu-scale-to-zero-fronted-by-the-wrong-thing  refused: secret-that-is-really-a-path
+  refused: hostpath-that-is-not-absolute        refused: state-with-both-backings
+  refused: hostpath-type-on-claim-backed-state  refused: state-with-no-backing
+  refused: hostpath-type-outside-its-enum-on-claim-backed-state  refused: stranded-outside-project-destinations
   refused: ipv6-literal-in-env                  refused: targets-a-project-tenancy-never-defines
   refused: liveness-probe-on-an-undeclared-port refused: wake-front-on-an-always-on-app
   refused: namespace-created-by-two-apps        refused: gpu-without-a-named-device-resource
-  refused: probe-on-an-undeclared-port
 ```
+
+Three controls rather than one, because four of those cases perturb a value the
+render **discards**: `replicas` sits behind an `mkIf` on `scaling`, and
+`hostPathType` is read only on the hostPath side of the backing choice. Without
+a sleeping control and a claim-backed one, "scale-to-zero was refused at all"
+would read as proof that the replica count had been checked. See
+[`../../studies/what-forces-this-option.md`](../../studies/what-forces-this-option.md).
 
 And `checks/apps-render.nix` asserts the other direction on the *rendered
 manifests*, parsed with a YAML parser rather than trusted: a minimal app renders

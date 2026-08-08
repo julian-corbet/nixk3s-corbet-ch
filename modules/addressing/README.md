@@ -168,3 +168,22 @@ one slot, and a full band each fail eval. The refusal *text* is asserted too —
 an out-of-band message that does not name the app, the number and both bands
 fails the check, because a guard that fires without saying what to do is only
 half a guard.
+
+## `enable` governs enforcement, not grammar
+
+Switching the module off switches off the *policy*: bind a band, sit inside it,
+do not run out of room. It does not switch off the *type* of a declaration. A
+slot is a number and an origin is a name whether or not anything is currently
+checking where the number lands, so those two — and every band's `base`, `size`
+and `description` — are read by assertions that sit outside the `enable` gate,
+and the check proves each ill-typed case is refused in **both** states of the
+flag.
+
+The alternative is worse than it sounds. A repository that has not turned the
+model on yet is precisely the one accumulating slots nobody has looked at; if
+`enable = false` meant "checked nothing", every one of those mistakes would
+arrive at once on the day somebody switched it on. See
+[`../../studies/what-forces-this-option.md`](../../studies/what-forces-this-option.md)
+for the shape of the bug this closed — including why
+`bands.<name>.description`, whose only reader is a helper used in messages, was
+accepted as a number.

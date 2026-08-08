@@ -28,6 +28,14 @@
 # also why there is no implicit fallback: a silent default is exactly how
 # everything ends up in the grab-bag band without anyone ever choosing it.
 #
+# ENABLING GOVERNS ENFORCEMENT, NOT GRAMMAR. What `enable` switches on is every
+# guard in this file: bind a band, sit inside it, do not run out of room. What
+# it does not switch off is the TYPE of a declaration — a slot is a number and
+# an origin is a name whether or not anything is currently checking where the
+# number lands. A module that validated nothing while disabled would let a
+# repository accumulate ill-typed slots quietly and then meet all of them at
+# once on the day it turned the model on, which is the worst moment to find out.
+#
 # WHAT IS PUBLIC HERE AND WHAT IS NOT. The mechanism is public; the layout is
 # not. This module declares the terms — bands exist, they have a base and a
 # size, origins bind them, apps take slots inside them — and knows no band, no
@@ -162,7 +170,17 @@ let
   # that coerces a `null` there takes the whole evaluation down instead of
   # reporting anything. The same filtering is why a value mentioned only in a
   # message is never forced, and therefore never type-checked: whatever an
-  # assertion wants checked has to appear in its `assertion` expression.
+  # assertion wants checked has to appear in its `assertion` expression, or in
+  # something the render reads.
+  #
+  # "OR IN SOMETHING THE RENDER READS" is the half that is easy to get wrong,
+  # and it is worth stating here because this comment is the one the rest of the
+  # family copies. A read behind an `mkIf`, an `if/else` branch or the far side
+  # of a short-circuit is not a read for the declarations that take the other
+  # path — the value is discarded unevaluated and its type goes unchecked for
+  # exactly those. Searching for values that appear only in messages does not
+  # find that; the question that finds both is "is this forced on EVERY path?".
+  # See `studies/what-forces-this-option.md`.
   showOrigin = app: if app.origin == null then "(unset)" else "`${app.origin}`";
   originName = app: if app.origin == null then "<origin>" else app.origin;
   showSlot = app: if app.slot == null then "(none)" else toString app.slot;
@@ -326,6 +344,60 @@ let
           + ".";
       })
     bandNames;
+
+  ## ---------------------------------------------------------------------
+  ## Grammar — checked whether or not the model is ENFORCED
+  ##
+  ## `enable` governs the POLICY: must every origin bind a band, must a slot sit
+  ## inside the band its origin bound, is a full band an error. It does not
+  ## govern the GRAMMAR. That a slot is a number and an origin a name is true of
+  ## the DECLARATION, not of the guard, and a type that only holds while a flag
+  ## is set is not a type — so these two assertions sit OUTSIDE the `mkIf` and
+  ## everything below it does not.
+  ##
+  ## Without them, a repository that had not switched the band model on yet
+  ## accepted `slot = "soon"` and rendered green, and found out on the day
+  ## somebody enabled the model — which is the worst possible moment, because
+  ## enabling it is when the numbers are all being read at once.
+  ##
+  ## Both exist for what they FORCE rather than for what they compare, and both
+  ## read a display helper on purpose. A helper that appears only inside
+  ## assertion MESSAGES is never evaluated — the module system formats the
+  ## failing assertions and nothing else — so reading one from an assertion
+  ## EXPRESSION is the only way its terms get checked at all. That is also why
+  ## neither may be simplified away as a tautology. They are tautologies; being
+  ## one is the job.
+  ## ---------------------------------------------------------------------
+
+  bandGrammar = lib.mapAttrsToList
+    (band: _: {
+      # `showBand` is the only reader of `bands.<name>.description` in this
+      # file, and its four other call sites are all messages. Reading it here
+      # forces the description, plus the `base` and `size` that `lastSlotOf`
+      # needs — none of which anything else touches while the model is off.
+      assertion = showBand band != "";
+      message =
+        "band `${band}` cannot describe itself. Its `base`, `size` and `description` are read here so "
+        + "that they are read at all: an option nothing reads is an option whose type is never checked, "
+        + "and a band declared with a description that is not a string would otherwise pass.";
+    })
+    cfg.bands;
+
+  appGrammar = name: app: [
+    {
+      assertion = showSlot app != "";
+      message =
+        "app `${name}` cannot state its slot. The number is read here so that it is read at all: with "
+        + "the band model switched off nothing else in this module touches it, and an option nothing "
+        + "reads is an option whose type is never checked.";
+    }
+    {
+      assertion = showOrigin app != "";
+      message =
+        "app `${name}` cannot state its origin. Read here for the same reason as its slot: a name that "
+        + "is only checked while a flag is set is not checked.";
+    }
+  ];
 
   appWarnings = name: app:
     let
@@ -592,13 +664,24 @@ in
     };
   };
 
-  config = lib.mkIf cfg.enable {
-    nixidy.assertions =
-      bandAssertions
-      ++ lib.concatLists (lib.mapAttrsToList appAssertions enabledApps);
+  config = lib.mkMerge [
+    # UNCONDITIONAL. The declaration is checked even where the model is not
+    # enforced — see the grammar block above for why that is not the same
+    # question as whether the band model is switched on.
+    {
+      nixidy.assertions =
+        bandGrammar
+        ++ lib.concatLists (lib.mapAttrsToList appGrammar enabledApps);
+    }
 
-    nixidy.warnings =
-      capacityWarnings
-      ++ lib.concatLists (lib.mapAttrsToList appWarnings enabledApps);
-  };
+    (lib.mkIf cfg.enable {
+      nixidy.assertions =
+        bandAssertions
+        ++ lib.concatLists (lib.mapAttrsToList appAssertions enabledApps);
+
+      nixidy.warnings =
+        capacityWarnings
+        ++ lib.concatLists (lib.mapAttrsToList appWarnings enabledApps);
+    })
+  ];
 }
