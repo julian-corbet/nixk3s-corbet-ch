@@ -96,6 +96,27 @@ consumer, and an assertion forcing it would check this repository's arithmetic a
 The distinction is worth keeping sharp, because "unforced" alone is not a finding: **an unforced
 option matters exactly as much as a consumer can put something wrong in it.**
 
+## It recurs, and that is the useful part
+
+Two more BRANCH-SHADOWED options arrived with the next extension of the app grammar, and both were
+found by running question 2 against the diff rather than by noticing anything:
+
+- **`state.<vol>.items`** — which keys a ConfigMap- or Secret-backed volume projects. `itemsOf`
+  reads it on the two *keyed* branches of a five-way backing chain and nowhere else, so beside a
+  claim, a node path or a scratch directory the value was accepted and discarded. It is now read by
+  a guard that runs for every entry, and — the usual outcome again — the guard is real: `items`
+  beside a backing that has no keys describes a projection that does not exist.
+- **`ports.<n>.servicePort`** — the number the Service publishes. `mkService` is its only reader,
+  and that call moved behind `rendersService` when a port gained the ability to decline publication.
+  So on an app that publishes nothing, `servicePort` became unreachable in exactly the way
+  `replicas` is unreachable on an app that sleeps. Same fix, same second payoff: a `servicePort` on
+  an unpublished port is a fact about an entry of a Service that will never carry it.
+
+The second one is worth dwelling on, because nothing about it was a mistake in the new option. It
+was a mistake in the *call site*: adding `publish` put an existing, correctly-read option behind a
+new branch. **Question 2 has to be asked again every time a render site gains a condition**, not
+only when an option is added.
+
 ## The general shape, for the next module in this family
 
 Ask it per option, and ask the harder version:
@@ -112,8 +133,9 @@ And in the checks, two rules that the cases here would have passed without:
 
 - **A negative case must perturb only the discarded value, against a control in the same shape.** A
   case that declares `scaling = "scale-to-zero"` and a bad `replicas` proves nothing on its own: the
-  refusal might be about scale-to-zero. `checks/apps-fail-closed.nix` therefore carries three
-  controls — plain, sleeping, and claim-backed — and every one of them must render.
+  refusal might be about scale-to-zero. `checks/apps-fail-closed.nix` therefore carries one control
+  per branch it needs to hold open — plain, sleeping, claim-backed, multi-container, identity-bearing,
+  and both directions of "publishes a port" — and every one of them must render.
 - **A flag-gated guard needs its cases run in both states of the flag.** `checks/addressing.nix`
   builds a second environment with `enable = lib.mkForce false` and requires the same ill-typed
   declarations to be refused there, plus a valid one to still render, so "refuses everything while

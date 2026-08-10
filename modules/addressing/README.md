@@ -157,6 +157,16 @@ refused outright once the band is full. A portless workload (a worker, a
 cron-shaped process) addresses nothing and is never asked for one. Its origin
 still binds a band, because every origin must.
 
+**"Renders a Service" is read from the app, never re-derived.** This module asks
+`nixk3s.apps.<name>.rendersService`, which is read-only and owned by the app
+grammar. "Has ports" is not the same statement and comes apart in both
+directions: an app whose only listening socket is on a *companion* container
+declares no `ports` of its own and does render a Service, while an app that
+declares a port and sets `publish = false` renders none. Either mistake is a
+slot silently demanded or silently skipped, so there is exactly one authority
+for the question and `checks/addressing.nix` proves both directions against a
+full band.
+
 ## What it is checked against
 
 `nix flake check` runs [`checks/addressing.nix`](../../checks/addressing.nix),
@@ -164,7 +174,9 @@ which proves both directions through real nixidy: a valid declaration renders
 and the report counts it, while an out-of-band slot, a slot outside every band,
 an app with no origin, an origin that binds nothing, a binding to a band nobody
 declared, a fallback that does not exist, two apps on one slot, two bands over
-one slot, and a full band each fail eval. The refusal *text* is asserted too —
+one slot, a full band, and an app addressed only through its companion's port
+each fail eval — while an app that declares ports and publishes none of them
+renders even against a band with no room left. The refusal *text* is asserted too —
 an out-of-band message that does not name the app, the number and both bands
 fails the check, because a guard that fires without saying what to do is only
 half a guard.

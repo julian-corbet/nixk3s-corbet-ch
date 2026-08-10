@@ -182,9 +182,17 @@ let
   # what a slot names. A portless workload (a worker, a cron-shaped process) has
   # nothing to address and is not asked for one.
   #
-  # `or { }` keeps this total when the apps module is absent and `ports` is
-  # therefore not a term at all.
-  addressable = app: (app.ports or { }) != { };
+  # READ THE APP'S OWN AUTHORITY, do not re-derive it. "Has ports" and "has an
+  # address" came apart in BOTH directions once a pod could hold several
+  # containers: an app whose only listening socket is on a companion has an
+  # empty `ports` and DOES render a Service, and an app that unpublishes its one
+  # port has ports and renders NONE. Either mistake is a silent slot-guard
+  # failure, and two derivations of one fact in two modules is a fact that
+  # drifts.
+  #
+  # Both `or`s keep this total when the apps module is absent and neither term
+  # exists at all.
+  addressable = app: app.rendersService or ((app.ports or { }) != { });
 
   # Never interpolate a nullable straight into a message. The module system
   # keeps only the FAILING assertions and formats those messages, so a message

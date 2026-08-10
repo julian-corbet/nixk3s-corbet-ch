@@ -55,6 +55,15 @@
   nixk3s.appPlatform = {
     gpuResourceName = "example.com/gpu";
     hostPathNodeSelector = { "kubernetes.io/hostname" = "example-node"; };
+
+    # The identity registry: role name -> what that role IS, numerically. An app
+    # names a role; these numbers are the shape of somebody's /etc/passwd and
+    # live here, once, exactly like the node selector above. Both roles are
+    # invented for the check.
+    identities = {
+      example-portal = { uid = 4242; gid = 4242; };
+      example-relay = { uid = 4343; gid = 4343; };
+    };
   };
 
   # The band model, with the layout a consumer would supply. EVERY value here is
@@ -87,10 +96,12 @@
     fallbackBand = "example-beta";
   };
 
-  # Three apps, chosen to cover the paths that differ in what gets RENDERED, not
+  # Five apps, chosen to cover the paths that differ in what gets RENDERED, not
   # merely in what evaluates: an always-on exposed app with probes and secrets,
-  # a scale-to-zero GPU app on a claim that also uses the escape hatch, and a
-  # portless worker on node-path state that owns its own namespace.
+  # a scale-to-zero GPU app on a claim that also uses the escape hatch, a
+  # portless worker on node-path state that owns its own namespace, a
+  # multi-container app whose Service reaches a companion rather than the app's
+  # own container, and an app with ports that publishes none of them.
   nixk3s.apps = {
     # Always-on, publicly exposed, digest-pinned, both consumption modes of a
     # Secret, sized, and probed over HTTP.
@@ -180,6 +191,140 @@
       state.spool = { hostPath = "/example/spool/example-worker"; mountPath = "/var/spool/example"; };
       # A Secret consumed as files rather than environment.
       secrets.credentials = { secret = "example-worker-credentials"; mountPath = "/run/credentials"; };
+    };
+
+    # ONE POD, FOUR CONTAINERS. The app's own process listens on a socket
+    # nothing outside the pod may reach; a web front beside it holds the port
+    # the Service publishes; and two init containers run to completion first, IN
+    # THE ORDER WRITTEN — which is deliberately not the alphabetical one, since
+    # reproducing that order is the whole reason `init` is a list.
+    #
+    # It also carries four of the five volume backings and both halves of the
+    # identity split: the app names a ROLE, and the numbers come from
+    # `appPlatform.identities` above.
+    example-portal = {
+      namespace = "example-apps";
+      origin = "example-repo-one";
+      slot = 35;
+      image = "registry.example.com/example-org/example-portal:3.1.0@sha256:4444444444444444444444444444444444444444444444444444444444444444";
+      exposure = "public";
+
+      # REAL, and deliberately unpublished: the front talks to it over
+      # loopback. Dropping it from `ports` would be a lie about the container;
+      # publishing it would be an address the app never asked for.
+      ports.app = { number = 9000; publish = false; };
+
+      identity = "example-portal";
+      security = {
+        runAsNonRoot = true;
+        seccomp = "RuntimeDefault";
+        allowPrivilegeEscalation = false;
+        capabilitiesDrop = [ "ALL" ];
+      };
+      resources.requests = { cpu = "50m"; memory = "128Mi"; };
+
+      # One curated directory, two views of it — and the one volume in this
+      # render whose files the kubelet is allowed to take ownership of.
+      state.html = {
+        hostPath = "/example/spool/example-portal";
+        ownership = "kubelet";
+        mounts = [
+          { mountPath = "/var/www/html"; }
+          { mountPath = "/var/www/config"; subPath = "config"; readOnly = true; }
+        ];
+      };
+
+      # A volume with NO view on the app's own container: only the front reads
+      # it. Legal for the first time, and the reason a `state` entry may give
+      # neither `mountPath` nor `mounts`.
+      state.web-conf.configMap = "example-portal-web";
+
+      # A Secret as a VOLUME rather than as environment, projecting ONE key onto
+      # one exact filename — which is what `secrets.<n>.mountPath` cannot say,
+      # because it mounts the whole Secret as a directory.
+      state.cfg-secret = {
+        secret = "example-portal-secrets";
+        items."zzz-secrets.conf" = "zzz-secrets.conf";
+        mounts = [{
+          mountPath = "/etc/portal/conf.d/zzz-secrets.conf";
+          subPath = "zzz-secrets.conf";
+          readOnly = true;
+        }];
+      };
+
+      # A path the image insists on writing to and nobody keeps. It is not
+      # durable, so it does not force `Recreate` on its own.
+      state.scratch = { emptyDir = true; mountPath = "/tmp/portal"; };
+
+      # The default is the narrow one: these credentials reach the app's own
+      # container and nothing else in the pod.
+      secrets.credentials.env.EXAMPLE_DB_PASSWORD = "db-password";
+
+      # ... and this one goes the other way, to the front only. The app's own
+      # process never sees it.
+      secrets.front-token = {
+        secret = "example-portal-front-token";
+        env.EXAMPLE_FRONT_TOKEN = "token";
+        containers = [ "web" ];
+      };
+
+      companions.web = {
+        image = "registry.example.com/example-org/example-front:1.27.0@sha256:5555555555555555555555555555555555555555555555555555555555555555";
+        # The port the Service publishes, on the container that actually holds
+        # it — reached by NAME, which Kubernetes resolves pod-wide, so nothing
+        # about the Service's selector changes.
+        ports.http = { number = 8080; servicePort = 80; };
+        mounts.html = [{ mountPath = "/var/www/html"; readOnly = true; }];
+        mounts.web-conf = [{ mountPath = "/etc/front/front.conf"; subPath = "front.conf"; readOnly = true; }];
+        probes.readiness = { port = "http"; path = "/healthz"; };
+        resources = { requests = { cpu = "10m"; memory = "32Mi"; }; limits.memory = "256Mi"; };
+        security.allowPrivilegeEscalation = false;
+      };
+
+      init = [
+        {
+          name = "prepare-tree";
+          image = "registry.example.com/example-org/example-portal:3.1.0@sha256:4444444444444444444444444444444444444444444444444444444444444444";
+          command = [ "sh" "-c" ];
+          args = [ "mkdir -p /var/www/html/data" ];
+          mounts.html = [{ mountPath = "/var/www/html"; }];
+        }
+        {
+          # A REFUSAL, not a wait: the app must not start and regenerate its
+          # own crypto identity when the Secret has not arrived.
+          name = "assert-secrets";
+          image = "registry.example.com/example-org/example-portal:3.1.0@sha256:4444444444444444444444444444444444444444444444444444444444444444";
+          command = [ "sh" "-c" ];
+          args = [ "test -s /etc/portal/conf.d/zzz-secrets.conf" ];
+          mounts.cfg-secret = [{
+            mountPath = "/etc/portal/conf.d/zzz-secrets.conf";
+            subPath = "zzz-secrets.conf";
+            readOnly = true;
+          }];
+        }
+      ];
+    };
+
+    # PORTS, AND NO ADDRESS. It listens on a real socket that nothing outside
+    # the pod should reach, so it renders no Service — exactly like an app with
+    # no ports, and therefore nothing asks it for a slot.
+    #
+    # It also has no durable state and still cannot run two live copies, which
+    # is what `singleWriter` says directly instead of leaving it to be inferred
+    # from a volume that is not there.
+    example-relay = {
+      namespace = "example-apps";
+      origin = "example-repo-two";
+      image = "registry.example.com/example-org/example-relay:0.9.1@sha256:6666666666666666666666666666666666666666666666666666666666666666";
+      ports.metrics = { number = 9100; publish = false; };
+      singleWriter = true;
+      probes.readiness.port = "metrics";
+      # The other spelling of an identity: this image starts as root, chowns its
+      # own config and drops privileges itself, so the numbers arrive as
+      # ENVIRONMENT and no `runAsUser` is rendered. Same registry entry either
+      # way — the app never restates a uid in order to change spelling.
+      identity = "example-relay";
+      identityEnv = { user = "EXAMPLE_UID"; group = "EXAMPLE_GID"; };
     };
   };
 }

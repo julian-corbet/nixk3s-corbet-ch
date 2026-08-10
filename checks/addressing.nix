@@ -9,6 +9,10 @@
 #     outside every band, an app with no origin, an origin that binds nothing, a
 #     binding to a band nobody declared, a fallback that does not exist, two
 #     apps on one slot, two bands over one slot, and a full band each fail eval;
+#   - WHAT COUNTS AS ADDRESSABLE, in both directions, because both of them fail
+#     silently: an app whose only published port sits on a companion needs a
+#     slot even though it declares no `ports`, and an app that declares ports
+#     and publishes none of them needs none even though it does;
 #   - the MESSAGE, asserted by content: an out-of-band slot is only actionable
 #     if the refusal names the app, the number, where it landed and where it
 #     belongs, so the check reads the text and requires all four;
@@ -157,6 +161,24 @@ let
         example-narrow-three = goodApp // { origin = "example-repo-narrow"; slot = null; };
       };
     };
+
+    # WHAT "ADDRESSABLE" MEANS, in the direction that fails silently. This app
+    # declares no `ports` of its own, so anything asking "does it have ports"
+    # concludes it needs no address — while it renders a Service on its
+    # COMPANION's port and genuinely does. The band is full, so the only way
+    # this renders green is if the guard was never asked; the module must read
+    # the app's own `rendersService` rather than re-derive the fact.
+    an-app-addressed-through-its-companion-bound-to-a-full-band = {
+      nixk3s.apps = {
+        example-narrow-one = goodApp // { origin = "example-repo-narrow"; slot = 64; };
+        example-narrow-two = goodApp // { origin = "example-repo-narrow"; slot = 65; };
+        example-narrow-front = {
+          image = goodApp.image;
+          origin = "example-repo-narrow";
+          companions.web = { image = goodApp.image; ports.http.number = 8080; };
+        };
+      };
+    };
   };
 
   withControl = values: lib.recursiveUpdate { nixk3s.apps.example-control = goodApp; } values;
@@ -288,6 +310,27 @@ let
 
   controlRenders = renders goodValues;
 
+  # THE SAME PREDICATE, THE OTHER WAY ROUND, and it needs a full band of its own
+  # to be worth anything. Every port this app declares is unpublished, so it
+  # renders no Service and holds no address — bound to a band with no room left,
+  # it must STILL render, because nothing asks a workload with no address for a
+  # number. Under a "does it have ports" predicate this is an eval failure, and
+  # the two cases together are the only way to tell a working guard from a guard
+  # that says yes to everything.
+  unpublishedInAFullBand = withControl {
+    nixk3s.apps = {
+      example-narrow-one = goodApp // { origin = "example-repo-narrow"; slot = 64; };
+      example-narrow-two = goodApp // { origin = "example-repo-narrow"; slot = 65; };
+      example-narrow-quiet = {
+        image = goodApp.image;
+        origin = "example-repo-narrow";
+        ports.metrics = { number = 9100; publish = false; };
+      };
+    };
+  };
+
+  unpublishedPortNeedsNoSlot = renders unpublishedInAFullBand;
+
   # The same declaration with the model switched off. Without it, "everything
   # fails while `enable` is false" would read as proof that the grammar is
   # checked there — a check that refuses every declaration proves only that it
@@ -378,57 +421,62 @@ lib.throwIf (!controlRenders)
   (lib.throwIf (!controlRendersWhileOff)
     ("nixk3s.addressing: the control declaration does not render with `enable = false`, so the grammar "
       + "cases below prove only that the module refuses everything while it is switched off.")
-    (lib.throwIf (wronglyRenderedIllTyped != [ ])
-      ("nixk3s.addressing accepted ill-typed declarations with the band model ENABLED: "
-        + lib.concatStringsSep ", " wronglyRenderedIllTyped)
-      (lib.throwIf (wronglyRenderedIllTypedWhileOff != [ ])
-        ("nixk3s.addressing accepted ill-typed declarations with the band model DISABLED: "
-          + lib.concatStringsSep ", " wronglyRenderedIllTypedWhileOff
-          + ". A type that only holds while a flag is set is not a type — the value is being declared "
-          + "either way, and the repository that has not switched the model on yet is exactly the one "
-          + "accumulating the mistakes.")
-        (lib.throwIf (wronglyRendered != [ ])
-          ("nixk3s.addressing rendered declarations it must have refused: "
-            + lib.concatStringsSep ", " wronglyRendered)
-          (lib.throwIf (silentlyRefused != [ ])
-            ("nixk3s.addressing refused these without an assertion message, so something other than its own "
-              + "guards stopped them: " + lib.concatStringsSep ", " silentlyRefused)
-            (lib.throwIf (missingFromMessage != [ ])
-              ("nixk3s.addressing refused an out-of-band slot with a message that never says "
-                + lib.concatStringsSep ", " missingFromMessage + ":\n" + outOfBandMessage)
-              (lib.throwIf (missingFromFullMessage != [ ])
-                ("nixk3s.addressing refused an app on a full band without saying "
-                  + lib.concatStringsSep ", " missingFromFullMessage + ":\n" + fullBandMessage)
-                (lib.throwIf (wrongFacts != [ ])
-                  ("nixk3s.addressing reports the wrong occupancy: "
-                    + lib.concatMapStringsSep "; "
-                    (f: "${f.what}: expected ${f.expected}, got ${f.actual}")
-                    wrongFacts)
-                  (lib.throwIf (!fullBandHasNoNextSlot)
-                    "nixk3s.addressing offers a next free slot in a band that is full."
-                    (lib.throwIf (missingWarnings != [ ])
-                      ("nixk3s.addressing never warned about " + lib.concatStringsSep ", " missingWarnings
-                        + ". What it warned about instead:\n" + warnedText)
-                      (pkgs.writeText "nixk3s-addressing" ''
-                        the control renders, and the report counts it:
-                        ${lib.concatMapStringsSep "\n" (f: "  ok       ${f.what}: ${f.actual}") reportFacts}
+    (lib.throwIf (!unpublishedPortNeedsNoSlot)
+      ("nixk3s.addressing asked for a slot from an app that publishes no ports and therefore renders no "
+        + "Service. It has no in-cluster address to name, and the band it is bound to is full — so this "
+        + "is an app refused for an address it does not have. `addressable` must read the app's own "
+        + "`rendersService`, not whether it happens to declare a port.")
+      (lib.throwIf (wronglyRenderedIllTyped != [ ])
+        ("nixk3s.addressing accepted ill-typed declarations with the band model ENABLED: "
+          + lib.concatStringsSep ", " wronglyRenderedIllTyped)
+        (lib.throwIf (wronglyRenderedIllTypedWhileOff != [ ])
+          ("nixk3s.addressing accepted ill-typed declarations with the band model DISABLED: "
+            + lib.concatStringsSep ", " wronglyRenderedIllTypedWhileOff
+            + ". A type that only holds while a flag is set is not a type — the value is being declared "
+            + "either way, and the repository that has not switched the model on yet is exactly the one "
+            + "accumulating the mistakes.")
+          (lib.throwIf (wronglyRendered != [ ])
+            ("nixk3s.addressing rendered declarations it must have refused: "
+              + lib.concatStringsSep ", " wronglyRendered)
+            (lib.throwIf (silentlyRefused != [ ])
+              ("nixk3s.addressing refused these without an assertion message, so something other than its own "
+                + "guards stopped them: " + lib.concatStringsSep ", " silentlyRefused)
+              (lib.throwIf (missingFromMessage != [ ])
+                ("nixk3s.addressing refused an out-of-band slot with a message that never says "
+                  + lib.concatStringsSep ", " missingFromMessage + ":\n" + outOfBandMessage)
+                (lib.throwIf (missingFromFullMessage != [ ])
+                  ("nixk3s.addressing refused an app on a full band without saying "
+                    + lib.concatStringsSep ", " missingFromFullMessage + ":\n" + fullBandMessage)
+                  (lib.throwIf (wrongFacts != [ ])
+                    ("nixk3s.addressing reports the wrong occupancy: "
+                      + lib.concatMapStringsSep "; "
+                      (f: "${f.what}: expected ${f.expected}, got ${f.actual}")
+                      wrongFacts)
+                    (lib.throwIf (!fullBandHasNoNextSlot)
+                      "nixk3s.addressing offers a next free slot in a band that is full."
+                      (lib.throwIf (missingWarnings != [ ])
+                        ("nixk3s.addressing never warned about " + lib.concatStringsSep ", " missingWarnings
+                          + ". What it warned about instead:\n" + warnedText)
+                        (pkgs.writeText "nixk3s-addressing" ''
+                          the control renders, and the report counts it:
+                          ${lib.concatMapStringsSep "\n" (f: "  ok       ${f.what}: ${f.actual}") reportFacts}
 
-                        every guard fires:
-                        ${lib.concatMapStringsSep "\n" (n: "  refused  ${n}") (lib.attrNames mustFail)}
+                          every guard fires:
+                          ${lib.concatMapStringsSep "\n" (n: "  refused  ${n}") (lib.attrNames mustFail)}
 
-                        and the grammar is checked whether or not the model is enforced —
-                        each of these is refused with `enable` both true and false:
-                        ${lib.concatMapStringsSep "\n" (n: "  refused  ${n}") (lib.attrNames illTyped)}
+                          and the grammar is checked whether or not the model is enforced —
+                          each of these is refused with `enable` both true and false:
+                          ${lib.concatMapStringsSep "\n" (n: "  refused  ${n}") (lib.attrNames illTyped)}
 
-                        and it says why — the out-of-band slot:
+                          and it says why — the out-of-band slot:
 
-                        ${outOfBandMessage}
+                          ${outOfBandMessage}
 
-                        the full band:
+                          the full band:
 
-                        ${fullBandMessage}
+                          ${fullBandMessage}
 
-                        the warnings, before either becomes an error:
+                          the warnings, before either becomes an error:
 
-                        ${warnedText}
-                      '')))))))))))
+                          ${warnedText}
+                        ''))))))))))))
