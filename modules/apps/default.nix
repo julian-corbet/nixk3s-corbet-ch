@@ -2152,6 +2152,21 @@ let
         + "or give a `mountPath` — a reference nothing reads is a typo, not a declaration.";
     }
     {
+      # `containers = null` means "the app's own container"; `containers = [ ]` means NO container,
+      # which is not a weaker version of the same thing but the total absence of delivery. The
+      # assertion above is satisfied by `envFrom`/`env`/`mountPath` on the ENTRY, and
+      # `unknownSecretConsumers` below only rejects names that do not exist — an empty list names
+      # nothing, so it clears both and renders green. What ships is a container whose `env` is
+      # `null`: the credential is declared, the Secret is real, the app starts, and it starts
+      # WITHOUT the secret. That failure surfaces as the app misbehaving at runtime for a reason
+      # nothing in the declaration points at, which is the exact shape this spine exists to refuse.
+      assertion = lib.all (sec: sec.containers == null || sec.containers != [ ]) (secretEntries app);
+      message =
+        "app `${app.name}` sets `secrets.<name>.containers = [ ]`, which names NO container, so the "
+        + "Secret is delivered to nothing. Omit `containers` for the app's own container, or name the "
+        + "containers that consume it.";
+    }
+    {
       assertion = lib.all
         (sec: sec.mountPath == null || lib.hasPrefix "/" sec.mountPath)
         (secretEntries app);

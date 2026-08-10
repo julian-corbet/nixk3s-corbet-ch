@@ -355,6 +355,22 @@ let
         };
       };
 
+    # The EMPTY list, which is not a milder version of the case above but a
+    # different hole. A name that does not exist is caught by the unknown-consumer
+    # guard; a list with no names in it has nothing to be unknown, and the
+    # "reference a Secret without consuming it" guard is already satisfied by the
+    # `env` on this entry. So both guards pass and the app renders with the
+    # credential delivered to no container at all — it starts, and starts without
+    # its secret.
+    secret-addressed-to-an-empty-container-list =
+      goodApp // {
+        secrets.creds = {
+          secret = "example-app-credentials";
+          env.EXAMPLE_TOKEN = "token";
+          containers = [ ];
+        };
+      };
+
     # A variable defined twice on ONE container, where the app's own container
     # is fine — the collision guard has to be per container to see this.
     env-and-secret-collide-on-one-companion =
