@@ -24,6 +24,12 @@ let
     nixidy.target.repository = "https://example.com/example-org/example-gitops.git";
     nixidy.target.branch = "main";
 
+    # The GPU cases below declare `gpu = true`, and the apps module refuses that
+    # until the cluster names the device it advertises (a wrong guess there
+    # schedules a device-less pod silently). Naming it is what lets this check
+    # exercise the override at all.
+    nixk3s.appPlatform.gpuResourceName = "example.com/gpu";
+
     nixk3s.addressing = {
       enable = true;
 
@@ -39,6 +45,12 @@ let
           size = 2;
           description = "a category with room for exactly two";
         };
+        # The band the GPU override pulls into, so that the one rule allowing a
+        # repository to address into two bands is exercised rather than described.
+        example-burn = {
+          base = 96;
+          description = "the category for workloads that burn the shared device";
+        };
       };
 
       bindings = {
@@ -47,6 +59,7 @@ let
       };
 
       fallbackBand = "example-alpha";
+      gpuBand = "example-burn";
     };
   };
 
@@ -92,6 +105,19 @@ let
     app-that-names-no-origin = goodApp // { origin = null; };
 
     origin-that-binds-no-band = goodApp // { origin = "example-repo-unbound"; };
+
+    # THE GPU OVERRIDE, PROVED BY ITS REFUSAL. Slot 33 is inside `example-alpha`,
+    # which is exactly the band this app's origin binds — so without the override
+    # this declaration is the control case and passes. It must FAIL here, because
+    # burning the device moves the app to `example-burn` whatever its origin
+    # bound. A check that only asserted the passing direction could not tell the
+    # override from a no-op.
+    gpu-app-in-its-origins-band-instead-of-the-gpu-band = goodApp // { gpu = true; };
+
+    # And the override does not hand out a licence to sit anywhere: a burning app
+    # outside the GPU band is refused just as squarely as a non-burning one
+    # outside its origin's.
+    gpu-app-outside-the-gpu-band = goodApp // { gpu = true; slot = 64; };
   };
 
   # Cases that perturb the model itself; each keeps one valid app alongside, so
@@ -103,6 +129,14 @@ let
 
     fallback-band-that-does-not-exist = {
       nixk3s.addressing.fallbackBand = lib.mkForce "example-nonexistent";
+    };
+
+    # A `gpuBand` naming nothing must fail LOUDLY. The failure mode it guards is
+    # the quiet one: `boundBandOf` would fall through to the origin's binding, so
+    # every burning app would go back to being judged against its repository's
+    # band with the guard still reporting green.
+    gpu-band-that-does-not-exist = {
+      nixk3s.addressing.gpuBand = lib.mkForce "example-nonexistent";
     };
 
     two-bands-over-one-slot = {
@@ -243,6 +277,12 @@ let
         image = goodApp.image;
         origin = "example-repo-narrow";
       };
+      # THE OVERRIDE'S PASSING DIRECTION, and the whole point of it: one origin
+      # legitimately addressing into two bands. `example-repo-one` binds
+      # `example-alpha` and `example-control` above sits there at 33 — while this
+      # app, from the SAME origin, sits at 96 in `example-burn` because it burns
+      # the device. Both render, and neither needed a per-app escape.
+      example-burner = goodApp // { gpu = true; slot = 96; };
     };
   };
 

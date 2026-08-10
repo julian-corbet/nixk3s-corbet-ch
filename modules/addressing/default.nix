@@ -147,11 +147,33 @@ let
   ## Per-app resolution
   ## ---------------------------------------------------------------------
 
+  # Does this app BURN the card? `gpu` is the apps module's own term for it and
+  # already carries exactly that meaning — the container requests a device — so
+  # nothing new has to be declared, and there is no second place to keep in
+  # step. `or false` for the same reason `addressable` has `or { }`: this module
+  # composes with an apps module that may not be present at all.
+  burnsGpu = app: (app.gpu or false);
+
   # The band an app's ORIGIN bound, or null when the app names no origin, the
   # origin binds nothing, or the binding names a band nobody declared. Each of
   # those has its own assertion below, so this only has to stay total.
+  #
+  # THE GPU OVERRIDE comes first, and it is the one rule that lets a repository
+  # address into two bands. Direct GPU burn pulls an app to `gpuBand` whatever
+  # its origin bound, because the card is a single physical resource the whole
+  # fleet contends for: what an app is ABOUT is its repository's business, but
+  # what it CONTENDS FOR has to be legible from the address alone. The test is
+  # burning the card, NOT being AI-adjacent — an app that reaches a model over
+  # somebody else's endpoint never fires this, which is why it keys off `gpu`
+  # (a device request) rather than off a subject.
+  #
+  # Two bands per repository are safe ONLY with a rule deciding which, and this
+  # is that rule: mechanical, derived from a term the app already declares for
+  # other reasons, and impossible to apply by accident. Without `gpuBand` set,
+  # nothing here fires and the binding is the sole answer, exactly as before.
   boundBandOf = app:
-    if app.origin == null then null
+    if cfg.gpuBand != null && burnsGpu app && cfg.bands ? ${cfg.gpuBand} then cfg.gpuBand
+    else if app.origin == null then null
     else if !(cfg.bindings ? ${app.origin}) then null
     else if !(cfg.bands ? ${cfg.bindings.${app.origin}}) then null
     else cfg.bindings.${app.origin};
@@ -236,6 +258,19 @@ let
           + "The fallback is what an origin binds when the right category is not obvious; a fallback "
           + "that does not exist turns that into an eval error at the worst possible moment.";
       }
+      {
+        # Fail LOUD rather than silently stop overriding. An undeclared `gpuBand`
+        # makes `boundBandOf` fall through to the origin's binding, so every GPU
+        # app would quietly go back to being judged against its repository's band
+        # — the guard would still pass, and the one rule that keeps the card's
+        # tenants legible would have been switched off by a typo.
+        assertion = cfg.gpuBand == null || cfg.bands ? ${cfg.gpuBand};
+        message =
+          "`nixk3s.addressing.gpuBand` names band `${toString cfg.gpuBand}`, which is not declared in "
+          + "`nixk3s.addressing.bands`. That would not disable the override loudly — it would disable "
+          + "it SILENTLY, sending every GPU app back to its origin's band with the guard still green. "
+          + "Declare the band, or unset `gpuBand` deliberately.";
+      }
     ]
     ++ map
       (pair: {
@@ -301,11 +336,23 @@ let
         # a wrong one is refuse it and let a human move it knowingly.
         assertion = app.slot == null || bound == null || inBand bound app.slot;
         message =
-          "app `${name}` claims slot ${showSlot app}, which is in ${showLanded app}, but its origin "
-          + "${showOrigin app} binds ${showBound app}. A slot is one identity in every address space "
-          + "the fleet maps it into, so nothing here will move it for you — moving it changes all of "
-          + "them at once. Either give the app a slot inside its own band (${showRoom bound}), or "
-          + "rebind its origin.";
+          "app `${name}` claims slot ${showSlot app}, which is in ${showLanded app}, but "
+          + (
+            # Say WHY the band is the band. For a GPU app the origin's binding is
+            # not the answer, and reporting it as though it were sends the reader
+            # to rebind a repository that was never wrong.
+            if cfg.gpuBand != null && burnsGpu app && cfg.bands ? ${cfg.gpuBand} then
+              "it BURNS THE GPU (`gpu = true`), which takes ${showBound app} regardless of what its "
+              + "origin ${showOrigin app} bound. A slot is one identity in every address space the "
+              + "fleet maps it into, so nothing here will move it for you — moving it changes all of "
+              + "them at once. Give the app a slot inside the GPU band (${showRoom bound}); do NOT "
+              + "rebind its origin, which governs where its NON-GPU apps land."
+            else
+              "its origin ${showOrigin app} binds ${showBound app}. A slot is one identity in every "
+              + "address space the fleet maps it into, so nothing here will move it for you — moving "
+              + "it changes all of them at once. Either give the app a slot inside its own band "
+              + "(${showRoom bound}), or rebind its origin."
+          );
       }
       {
         # Capacity, said clearly and at eval, rather than left to become a
@@ -566,6 +613,33 @@ in
         repository declares and refuses to supply.
       '';
       example = lib.literalExpression ''{ example-repo = "example-alpha"; }'';
+    };
+
+    gpuBand = lib.mkOption {
+      type = lib.types.nullOr lib.types.str;
+      default = null;
+      description = ''
+        The band an app takes when it BURNS the GPU, whatever band its origin
+        bound. `null` (the default) leaves the binding as the sole answer and
+        no app is ever moved.
+
+        This is the one sanctioned way a repository addresses into two bands,
+        and it is deliberately a RULE rather than a per-app escape: it keys off
+        the app's own `gpu` term — a device request, which the app already
+        declares because the container needs one — so nothing is decided twice
+        and nothing can be applied selectively. An app that reaches a model
+        through somebody else's endpoint requests no device and is therefore
+        never pulled here; the test is the card, not the subject.
+
+        The reason it exists at all is that a single physical card is contended
+        for by the whole fleet, so which apps claim it should be legible from
+        the address rather than by reading each repository. What an app is
+        ABOUT stays its origin's business; what it CONTENDS FOR becomes the
+        band's.
+
+        Which band that is, like every other band, is fleet layout — so it is
+        named here and nowhere in a public module.
+      '';
     };
 
     fallbackBand = lib.mkOption {
