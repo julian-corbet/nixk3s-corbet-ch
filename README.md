@@ -65,11 +65,12 @@ and has survived node rebuilds and a bare-metal migration — and since
 k3s server config comes from `k3s-host`, and its entire Argo CD project layer
 (11 AppProjects + 5 protected namespace anchors) is rendered by `tenancy`,
 adopted in-place with a semantically-verified zero-drift cutover (the
-module + consumer values reproduced the live objects field-exactly). `apps` is
-newer: its vocabulary is extracted from that cluster's app layer, but it has
-not yet replaced it. `addressing` is newer still — the band model it encodes has
-governed that cluster's slots by hand and by convention for a year, and this is
-the first time the convention is a thing that can refuse you.
+module + consumer values reproduced the live objects field-exactly). The same
+cluster now declares 40 workloads through `apps`; eight exercise its ordered
+init-container vocabulary, and 16 still carry at least one whole object through
+the visible `raw` escape hatch. `addressing` guards every one of those app slots
+against the declaring repository's bound band. The remaining raw objects are a
+measured migration tail, not a second application model.
 
 The repository can also demonstrate that its modules evaluate, on its own, in
 seconds: `nix flake check` renders `tenancy`, `apps` and `addressing` through

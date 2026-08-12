@@ -487,16 +487,15 @@ anyone's addresses.
 
 ## Status
 
-New. The vocabulary is not invented: it is what a survey of real self-hosted app
-manifests actually declares — which is why `state` has a node-path backing at
-all (most apps sit on a directory somebody curates, not a claim), why `secrets`
-is a first-class term rather than an afterthought, and why `identity` is a role
-rather than a number. Rendering is proven by `nix flake check`; unlike its
-sibling modules, this one has not yet replaced a live app layer.
+The vocabulary comes from a survey of real self-hosted app manifests — which is
+why `state` has a node-path backing at all (most apps sit on a directory somebody
+curates, not a claim), why `secrets` is a first-class term rather than an
+afterthought, and why `identity` is a role rather than a number. Rendering is
+proven by `nix flake check`, and the production cluster that supplied the corpus
+now declares 40 workloads through this module.
 
-The multi-container half — `companions` and `init` — is the newest and the
-largest surface, which is why `appPlatform.multiContainerApps` is read-only and
-countable. Whether a pod vocabulary earns that surface is a number, not an
-argument: if the list stays at one entry, the honest reading is that the
-minimal-surface shape was right and this should come back out before a second
-app depends on it.
+The multi-container surface is justified by measured use rather than a future
+promise: eight production apps currently declare ordered init containers. The
+same consumer reports 16 apps in `appPlatform.rawEscapeHatchApps`; reducing that
+list, without growing this vocabulary for one-off Kubernetes objects, is the
+remaining migration pressure.
