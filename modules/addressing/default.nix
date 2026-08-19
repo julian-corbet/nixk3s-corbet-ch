@@ -117,8 +117,47 @@ let
   ## the band it landed in until somebody moves it deliberately.
   ## ---------------------------------------------------------------------
 
-  claims = lib.mapAttrsToList (name: app: { inherit name; inherit (app) slot; })
+  appClaims = lib.mapAttrsToList (name: app: { inherit name; inherit (app) slot; })
     (lib.filterAttrs (_: app: app.slot != null) enabledApps);
+
+  # Positions held by something this module does not render. They occupy the number space exactly
+  # as an app does — the whole point is that occupancy is counted by POSITION, never by who declared
+  # it or whether this grammar happens to render it. Folding them in here rather than at each use
+  # means every guard that counts occupancy sees them without being told about them twice.
+  reservationClaims = lib.mapAttrsToList
+    (name: r: { inherit name; inherit (r) slot; })
+    cfg.reservations;
+
+  claims = appClaims ++ reservationClaims;
+
+  # A reservation is held to the SAME band rule as an app: a position drawn from a band its origin
+  # does not bind is out of place whether or not this module renders the thing holding it. Stated
+  # separately from the app guards because a reservation has no ports, no Service and no GPU
+  # question — only an origin and a number — so reusing the app assertion would mean inventing
+  # answers to questions a reservation cannot be asked.
+  reservationAssertions = lib.mapAttrsToList
+    (name: r:
+      let
+        bound = if cfg.bindings ? ${r.origin} then cfg.bindings.${r.origin} else null;
+      in
+      {
+        assertion = bound != null && cfg.bands ? ${bound} && inBand bound r.slot;
+        message =
+          "reservation `${name}` holds slot ${toString r.slot} for origin `${r.origin}` (${r.note}), "
+          + (
+            if bound == null then
+              "and that origin binds no band. A reservation exists to make a held position VISIBLE in "
+              + "the occupancy report, which it cannot be without a band to be visible in. Bind the "
+              + "origin, or drop the reservation and accept that the number reads as free."
+            else if !(cfg.bands ? ${bound}) then
+              "and its origin binds `${bound}`, which is not a band that exists."
+            else
+              "which is outside ${showRoom bound}, the band its origin binds. A slot is one identity "
+              + "in every address space the fleet maps it into, so nothing here will move it for you. "
+              + "Either the number is wrong or the origin is."
+          );
+      })
+    cfg.reservations;
 
   claimantsOf = slot: map (c: c.name) (lib.filter (c: c.slot == slot) claims);
 
@@ -623,6 +662,53 @@ in
       example = lib.literalExpression ''{ example-repo = "example-alpha"; }'';
     };
 
+    reservations = lib.mkOption {
+      type = lib.types.attrsOf (lib.types.submodule {
+        options = {
+          slot = lib.mkOption {
+            type = lib.types.ints.unsigned;
+            description = "The position held. Same number space, same rules, as an app's own slot.";
+          };
+          origin = lib.mkOption {
+            type = lib.types.str;
+            description = ''
+              Which repository's band this position is drawn from. Required, unlike an app's, because
+              a reservation has no other way to say where it belongs.
+            '';
+          };
+          note = lib.mkOption {
+            type = lib.types.str;
+            description = "What holds it, in a few words, for whoever reads the occupancy report.";
+          };
+        };
+      });
+      default = { };
+      description = ''
+        POSITIONS HELD BY SOMETHING THIS MODULE DOES NOT RENDER.
+
+        Occupancy is counted from `nixk3s.apps`, which is the right default: an app declares a slot
+        and the report shows it taken. But a fleet's number space is not owned exclusively by apps
+        this grammar renders. A workload delivered as verbatim manifests, an operator that publishes
+        no Service, a controller adopted from somewhere else — each can hold a real position while
+        being invisible here, and the report then advertises a live address as free. That is a
+        collision waiting to be allocated, and it is the failure this option exists to prevent.
+
+        A reservation is NOT a lightweight app and must never become one. It renders nothing, it
+        cannot carry ports, and it is not a place to declare workloads. It says one thing: this
+        number is taken, by this origin, for this reason. Every guard that counts occupancy — the
+        duplicate-slot refusal, the band's free list, `nextFree` — then sees it, because they all
+        read the same claim list.
+
+        Reachable only by the private layer, like every other value here: which numbers are taken is
+        a fact about somebody's fleet.
+      '';
+      example = lib.literalExpression ''
+        {
+          pg17 = { slot = 101; origin = "example-repo"; note = "CNPG Cluster, delivered as manifests"; };
+        }
+      '';
+    };
+
     gpuBand = lib.mkOption {
       type = lib.types.nullOr lib.types.str;
       default = null;
@@ -759,6 +845,7 @@ in
     (lib.mkIf cfg.enable {
       nixidy.assertions =
         bandAssertions
+        ++ reservationAssertions
         ++ lib.concatLists (lib.mapAttrsToList appAssertions enabledApps);
 
       nixidy.warnings =

@@ -147,6 +147,35 @@ let
       nixk3s.addressing.bands.example-overlap = { base = 33; size = 4; };
     };
 
+    # A RESERVATION IS HELD TO THE SAME BAND RULE AS AN APP. It renders nothing, which is exactly
+    # why it needs the guard: a position claimed outside its origin's band would otherwise sit in
+    # the occupancy report unchallenged and make the wrong band look full.
+    reservation-outside-its-origins-band = {
+      nixk3s.addressing.reservations.example-held = {
+        slot = 64;
+        origin = "example-repo-one";
+        note = "delivered as verbatim manifests";
+      };
+    };
+
+    reservation-whose-origin-binds-no-band = {
+      nixk3s.addressing.reservations.example-held = {
+        slot = 33;
+        origin = "example-repo-unbound";
+        note = "delivered as verbatim manifests";
+      };
+    };
+
+    # Occupancy is counted by POSITION, never by who declared it or whether this grammar renders
+    # it — so a reservation collides with an app on the same number exactly as two apps would.
+    reservation-colliding-with-an-app = {
+      nixk3s.addressing.reservations.example-held = {
+        slot = 33;
+        origin = "example-repo-one";
+        note = "delivered as verbatim manifests";
+      };
+    };
+
     two-apps-on-one-slot = {
       nixk3s.apps.example-second = goodApp;
     };
@@ -293,6 +322,15 @@ let
   # all — which is not an omission: nothing addresses a workload that renders no
   # Service, so nothing asks it for a number.
   goodValues = {
+    # A POSITION HELD BY SOMETHING THIS GRAMMAR DOES NOT RENDER. It must be counted exactly as an
+    # app is: the whole reason the option exists is that a number held outside  would
+    # otherwise read as free and be handed to the next allocation.
+    nixk3s.addressing.reservations.example-held = {
+      slot = 34;
+      origin = "example-repo-one";
+      note = "delivered as verbatim manifests";
+    };
+
     nixk3s.apps = {
       example-control = goodApp;
       example-worker = {
@@ -358,8 +396,13 @@ let
       actual = report.example-alpha.taken."33";
     }
     {
-      what = "fifteen of sixteen left";
-      expected = "15";
+      what = "a reservation is counted in the same band, by name";
+      expected = "example-held";
+      actual = report.example-alpha.taken."34";
+    }
+    {
+      what = "fourteen of sixteen left -- the reservation consumes one";
+      expected = "14";
       actual = toString (lib.length report.example-alpha.free);
     }
     {
