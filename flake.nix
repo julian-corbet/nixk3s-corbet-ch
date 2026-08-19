@@ -16,7 +16,21 @@
   outputs = { self, nixpkgs, nixidy }:
     let
       lib = nixpkgs.lib;
-      systems = [ "x86_64-linux" "aarch64-linux" ];
+      # ONLY THE SYSTEM THESE CHECKS CAN GENUINELY BE EVALUATED ON, which is the narrower claim and
+      # the honest one. Every check here builds a real nixidy environment, and nixidy's own
+      # `fromYAML` is IMPORT-FROM-DERIVATION: reading a manifest back BUILDS a derivation during
+      # evaluation. An aarch64-linux derivation cannot be built by an x86_64 runner, so declaring
+      # aarch64 bought no coverage and made `nix flake check --all-systems` fail outright with
+      # "a 'aarch64-linux' ... is required to build ... but I am a 'x86_64-linux'".
+      #
+      # Keeping aarch64 and dropping `--all-systems` is the worse trade and the one this family
+      # refuses: a bare `nix flake check` omits the systems it cannot evaluate and still exits 0, so
+      # CI reports green having tested half of what the flake claims. Narrow the claim, keep the
+      # check strict.
+      #
+      # Nothing else narrows: the modules are nixidy/NixOS modules and plain data, available to a
+      # consumer on any system. Only `checks` and `formatter` were ever system-scoped here.
+      systems = [ "x86_64-linux" ];
       forAllSystems = f: lib.genAttrs systems f;
     in
     {
