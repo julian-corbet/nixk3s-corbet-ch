@@ -485,6 +485,12 @@ The consumer's nixidy env imports both this grammar and the domain module; the
 domain module knows the app, this module knows Kubernetes, and neither knows
 anyone's addresses.
 
+The one domain module that lives *here* is [`cockpit`](../cockpit), and it is
+not an exception to "this module ships no apps": nothing it catalogues is an app
+anybody has. A cockpit face is the platform looking at itself — it would still
+be worth running on a cluster with no apps in it, which is the test. It imports
+this grammar; this grammar cannot see it.
+
 ## Status
 
 The vocabulary comes from a survey of real self-hosted app manifests — which is

@@ -42,6 +42,13 @@
       # governance. It deliberately knows nothing about what kind of apps you
       # run — no taxonomy of application categories exists here, because that
       # belongs to whatever ships the apps.
+      #
+      # THE ONE CATALOGUE, and it is not an exception to that: `cockpit` holds
+      # the platform's OWN faces — the GitOps controller, the console, the
+      # portal — which are not apps anybody has. Delete every app on the cluster
+      # and that catalogue is unchanged and still has a job; a catalogue of
+      # "apps you run" is empty there. It ships as its own module for exactly
+      # that reason and is not part of the default.
       nixosModules = {
         k3s-host = ./modules/k3s-host;
         # Only module in this class - trivially the default.
@@ -51,12 +58,19 @@
         apps = ./modules/apps;
         tenancy = ./modules/tenancy;
         addressing = ./modules/addressing;
-        # Every module of this class: the app grammar, the tenancy model it
-        # renders its Applications into, and the band model that governs where
-        # its apps sit in the cluster's identity space. They are independent —
-        # each works alone — but importing them together is what makes the
-        # interlocks checkable (a destination missing from a project, a slot
-        # outside its repository's band), so the default carries all three.
+        # The platform's own faces — the one catalogue of particular software
+        # this repository keeps, and the reason it does not contradict the
+        # charter above: a cockpit surface is not an app you HAVE, it is what
+        # you open to see whether the thing running your apps is working.
+        # It imports the grammar; the grammar cannot see it.
+        cockpit = ./modules/cockpit;
+        # THE GRAMMAR AND ITS INTERLOCKS, and deliberately NOT the cockpit. The
+        # three below are independent — each works alone — but importing them
+        # together is what makes the interlocks checkable (a destination missing
+        # from a project, a slot outside its repository's band), so the default
+        # carries all three. The cockpit stays out because importing "everything"
+        # must not hand a consumer an opinion about which dashboards exist:
+        # taking a catalogue is its own deliberate line.
         default = { imports = [ ./modules/apps ./modules/tenancy ./modules/addressing ]; };
       };
 
@@ -73,10 +87,33 @@
           # to "my app needs a fleet fact you refuse to express" is that a
           # private module defines it on the rendered object, and a claim like
           # that is worth nothing unchecked.
+          #
+          # It names the GRAMMAR's modules rather than everything this flake
+          # exports, and that is load-bearing rather than tidy: the cockpit is a
+          # module of this class too, and it must not be in this render. "A
+          # consumer can take the grammar without the cockpit" is a claim, and
+          # this is the env that keeps it true — it would stop evaluating the
+          # day the grammar started needing a catalogue.
           env = nixidy.lib.mkEnv {
             inherit pkgs;
-            modules = lib.attrValues self.nixidyModules
-              ++ [ ./examples/all/values.nix ./examples/all/private-overlay.nix ];
+            modules = [
+              self.nixidyModules.default
+              ./examples/all/values.nix
+              ./examples/all/private-overlay.nix
+            ];
+          };
+
+          # The cockpit, rendered against the band model — and NOT against the
+          # grammar, which it imports itself. That is the other direction of the
+          # same claim: composing this module alone is enough, because a
+          # translator carries the vocabulary it translates into.
+          cockpitEnv = nixidy.lib.mkEnv {
+            inherit pkgs;
+            modules = [
+              self.nixidyModules.cockpit
+              self.nixidyModules.addressing
+              ./examples/cockpit/values.nix
+            ];
           };
 
           # 2. The NixOS module, composed into a real system. Only the stubs a
@@ -133,6 +170,28 @@
           # a multi-gigabyte download. Dropping the context keeps the evaluation
           # (which is the thing being checked) and discards the closure (which is
           # not).
+          # 6. The cockpit, in both directions like the grammar it translates
+          # into: an example surface that must render, and a declaration
+          # violating each of its guards that must be refused — the catalogue's
+          # own variables overridden, a directory that must already exist backed
+          # by one that gets created, an at-rest key written as a value, an
+          # identity guessed or stated where nothing reads it.
+          cockpit-eval = import ./checks/cockpit-eval.nix {
+            inherit pkgs lib nixidy;
+            cockpitModule = self.nixidyModules.cockpit;
+            addressingModule = self.nixidyModules.addressing;
+            values = ./examples/cockpit/values.nix;
+          };
+
+          # 7. And the manifests it actually PRODUCED, parsed and asserted field
+          # by field. A translator can resolve every option correctly and still
+          # render a pod that mounts the wrong path, writes its database onto its
+          # own filesystem, or carries a uid nothing reads.
+          cockpit-render = import ./checks/cockpit-render.nix {
+            inherit pkgs lib;
+            env = cockpitEnv;
+          };
+
           host-module-evaluates =
             pkgs.writeText "nixk3s-host-drvpath"
               (builtins.unsafeDiscardStringContext host.config.system.build.toplevel.drvPath);

@@ -52,6 +52,18 @@ production-lived answer:
   free slot; the human decides. Bands are finite, so a band that fills up says
   so at eval instead of becoming a collision. Every band, base and binding is a
   value the consumer supplies — the mechanism is public, the layout is not.
+- **`cockpit`** ([`nixidyModules.cockpit`](modules/cockpit), landed) — the
+  platform's own faces: the surfaces you open to find out whether the cluster
+  that runs your apps is working, catalogued and translated into the grammar
+  above. It is the one catalogue of particular software in a repository that is
+  otherwise pure mechanism, and it does not contradict that — nothing in it is
+  an app you *have*. **A face belongs only if it would still be worth running on
+  a cluster with no apps in it**: delete every workload and the catalogue is
+  unchanged and still has a job, while a catalogue of "apps you run" is empty
+  there. The dependency runs one way (the cockpit imports the grammar; the
+  grammar cannot see the cockpit) and it is deliberately **not** part of
+  `nixidyModules.default`, because importing everything must not hand anyone an
+  opinion about which dashboards exist.
 - **[docs/SPINE.md](docs/SPINE.md)** (landed) — the GitOps spine pattern:
   nixidy render → commit → Argo CD sync, with the rendered tree excluded from
   the render trigger (no loops).
@@ -73,15 +85,26 @@ against the declaring repository's bound band. The remaining raw objects are a
 measured migration tail, not a second application model.
 
 The repository can also demonstrate that its modules evaluate, on its own, in
-seconds: `nix flake check` renders `tenancy`, `apps` and `addressing` through
-real nixidy and composes `k3s-host` into a NixOS system, from the placeholder
-configs in [examples/](examples). All are proven in the failing direction too —
+seconds: `nix flake check` renders `tenancy`, `apps`, `addressing` and `cockpit`
+through real nixidy and composes `k3s-host` into a NixOS system, from the
+placeholder configs in [examples/](examples). All are proven in the failing direction too —
 a bad `role` value and an undefined tenancy option each fail the corresponding
 check, the app grammar's twenty guards each get a declaration that violates them
 and must be refused, against a control declaration that must render, and the
 band model is checked the same way plus one step further: the *text* of its
 refusal is asserted, because a guard that fires without naming the app, the
 number and both bands is only half a guard.
+
+`cockpit` is checked the same way in both directions, and its render check reads
+the split back off the bytes: the port, the probes and the container-internal
+paths arrive from the catalogue with the declaration never stating one, the
+database lands inside the directory the declaration backs, the identity the image
+drops to arrives as two numbers while the pod carries no security context of its
+own, and the value that must survive every restart unchanged is a reference and
+never a literal. The env that renders it composes the cockpit *alone* — the
+grammar comes with it — while the env that renders the grammar composes it
+without the cockpit, which is what keeps "you can take the grammar without the
+catalogue" a checked claim rather than a promise.
 
 `apps` goes one step further than evaluating: `checks/apps-render.nix` parses
 the manifests the grammar actually produced and asserts them field by field,
