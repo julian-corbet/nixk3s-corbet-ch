@@ -12,14 +12,19 @@
 # the database sits INSIDE the directory something backs; the identity the image drops to arrives
 # as two numbers and the pod carries no security context of its own; the key that must never change
 # arrives by reference and never as a value; a directory that must already exist is mounted with
-# the backing that refuses to create one; and the Service is a plain in-cluster address with
-# nothing pinned.
-{ pkgs, lib, env }:
+# the backing that refuses to create one; the Service is a plain in-cluster address with nothing
+# pinned; and an adopting declaration renders an Application that takes objects over server-side
+# while a fresh one does not — read off BOTH trees, since a promise about absence cannot be
+# checked from a single render.
+{ pkgs, lib, env, envFresh }:
 
 pkgs.runCommand "nixk3s-cockpit-render"
 {
   nativeBuildInputs = [ pkgs.yq-go ];
   manifests = env.environmentPackage;
+  # The same surface rendered with `adopt` taken away, because a term that only
+  # ever renders one way is indistinguishable from one the translator hardcodes.
+  freshManifests = envFresh.environmentPackage;
   # Not a manifest, and the only place the band model is visible in a rendered tree: it governs a
   # number and renders nothing from it, so the check reads the position off the config and asserts
   # that no object grew an address out of it.
@@ -121,7 +126,42 @@ pkgs.runCommand "nixk3s-cockpit-render"
 
   echo "== the surface lands in the project the cockpit puts management things in =="
   check "project" "example-management" "$(y '.spec.project' $app)"
-  check "adopted in place" "ServerSideApply=true" "$(y '.spec.syncPolicy.syncOptions[0]' $app)"
+
+  echo "== adoption is the DEPLOYMENT's fact, and it renders in both directions =="
+  # Whether the object this surface declares already exists is one cluster's history, never a
+  # property of the software, so it is a term of the declaration and the catalogue does not carry
+  # it. What it buys is the Application taking the live object over server-side instead of Argo CD
+  # reconstructing the diff client-side -- which against a face whose single-writer database forces
+  # Recreate is the difference between a cutover and an outage.
+  freshApp="$freshManifests/apps/Application-example-portal.yaml"
+  check "adopted: server-side apply" "ServerSideApply=true" "$(y '.spec.syncPolicy.syncOptions[0]' $app)"
+  check "adopted: server-side diff"  "ServerSideDiff=true"  "$(y '.metadata.annotations."argocd.argoproj.io/compare-options"' $app)"
+  # The other direction, and the reason a second render exists at all: the default must render an
+  # Application that asks for NEITHER. A translator that dropped the term on the floor would pass
+  # every assertion above by accident of the grammar's own default.
+  check "fresh: no server-side apply" "null" "$(y '.spec.syncPolicy.syncOptions' $freshApp)"
+  check "fresh: no server-side diff"  "null" "$(y '.metadata.annotations' $freshApp)"
+
+  echo "== and it costs the Application, nothing else: no pod is restarted by asking to adopt =="
+  # Same declaration, one boolean apart. Every other rendered file must be byte-identical, and the
+  # Application must not be -- the first half is what makes it safe to flip on a live surface, the
+  # second is what makes the term real.
+  ours=$(cd "$manifests" && find -L . -type f | sort | tr '\n' ' ')
+  theirs=$(cd "$freshManifests" && find -L . -type f | sort | tr '\n' ' ')
+  check "both trees hold the same files" "$ours" "$theirs"
+  for f in $ours; do
+    a=$(sha256sum < "$manifests/$f" | cut -d' ' -f1)
+    b=$(sha256sum < "$freshManifests/$f" | cut -d' ' -f1)
+    if [ "$f" = "./apps/Application-example-portal.yaml" ]; then
+      if [ "$a" = "$b" ]; then
+        echo "  FAIL adoption is visible in $f: the two renders are identical"; fail=1
+      else
+        echo "  ok   adoption is visible in $f"
+      fi
+    else
+      check "unmoved by adoption: $f" "$a" "$b"
+    fi
+  done
 
   if [ "$fail" -ne 0 ]; then
     echo "the rendered tree does not match the cockpit's promises" >&2

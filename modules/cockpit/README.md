@@ -166,6 +166,30 @@ rather than failing on an option that does not exist. `origin` defaults to this
 repository's own name, since this repository is the one declaring these
 surfaces; a vendored copy declaring under another name says so.
 
+## Adoption
+
+```nix
+adopt = true;   # default false
+```
+
+A face is usually the *oldest* thing in a cluster — it was running before
+anybody wrote a module for it — so arriving here by adoption is the ordinary
+case rather than the exotic one. `adopt` renders the Application with
+server-side apply and server-side diff, so Argo CD takes the live object over
+against the API server instead of reconstructing the diff client-side. It does
+not make the diff zero; it makes an in-place cutover possible at all, and
+against a face whose single-writer database forces `Recreate` that is the
+difference between a cutover and an outage.
+
+It is a term of the **declaration** and the catalogue does not carry it, for the
+same reason the probe budgets are split off: whether an object already exists is
+one cluster's history, not a fact about the software. The same face adopted on
+one cluster and created fresh on another differs here and nowhere else — which
+is checked rather than claimed: `cockpit-render` renders the example surface
+twice, once with the term and once without, and asserts that the Application
+asks for server-side apply and diff in the first and for neither in the second,
+while every other rendered file is byte-identical between the two.
+
 ## The catalogue
 
 | Face | What it is |

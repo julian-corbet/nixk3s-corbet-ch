@@ -116,6 +116,24 @@
             ];
           };
 
+          # THE SAME COCKPIT DECLARATION WITH ITS ONE ADOPTION TERM TAKEN AWAY.
+          # `adopt` renders by presence, so the only honest way to check it is
+          # to render the identical surface without it and read both trees: a
+          # term that is asserted in one direction only is indistinguishable
+          # from a term the translator hardcodes. Everything else about this
+          # environment is the example file, so any difference between the two
+          # rendered trees is that boolean and nothing else — which is exactly
+          # what the render check reads back, file by file.
+          cockpitFreshEnv = nixidy.lib.mkEnv {
+            inherit pkgs;
+            modules = [
+              self.nixidyModules.cockpit
+              self.nixidyModules.addressing
+              ./examples/cockpit/values.nix
+              { nixk3s.cockpit.surfaces.example-portal.adopt = lib.mkForce false; }
+            ];
+          };
+
           # 2. The NixOS module, composed into a real system. Only the stubs a
           # bootable config demands are supplied — this is about whether the
           # module composes, not about producing a machine anyone would run.
@@ -190,6 +208,7 @@
           cockpit-render = import ./checks/cockpit-render.nix {
             inherit pkgs lib;
             env = cockpitEnv;
+            envFresh = cockpitFreshEnv;
           };
 
           host-module-evaluates =
