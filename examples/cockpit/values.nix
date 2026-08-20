@@ -7,10 +7,11 @@
 # the NAME of the key inside it.
 #
 # TWO DECLARATIONS OF ONE FACE, which is the honest shape while the catalogue holds one entry: a
-# rendered surface exercising every path the module has (durable state that must already exist, an
-# identity the image drops to, a Secret consumed by key, a position in a band, sleeping behind a
-# wake front), and a parked one proving a declaration can exist without rendering — the difference
-# the render check reads back off the tree.
+# rendered surface exercising every path the module has (durable state that must already exist, a
+# probe budget the catalogue deliberately does not carry, an identity the image drops to, a Secret
+# consumed by key, a position in a band, sleeping behind a wake front), and a parked one proving a
+# declaration can exist without rendering — the difference the render check reads back off the
+# tree.
 {
   # Required by the nixidy environment itself, not by any module here.
   nixidy.target.repository = "https://example.com/example-org/example-gitops.git";
@@ -59,6 +60,16 @@
       # and is not restated: the catalogue marks this one as having to hold data already, so the
       # creating backing is refused rather than defaulted away.
       state.appdata.hostPath = "/example/state/example-portal";
+
+      # HOW PATIENT each probe is on this invented cluster — the other half the catalogue cannot
+      # supply. WHICH probes there are and what answers them arrives from it; these numbers are a
+      # stopwatch held against one node's disks, so they are stated here and defaulted nowhere.
+      # There is no `liveness` entry because the catalogue refuses one, and budgeting a refused
+      # probe is an eval error rather than an override.
+      probes = {
+        startup = { periodSeconds = 3; failureThreshold = 40; timeoutSeconds = 5; };
+        readiness = { periodSeconds = 5; failureThreshold = 30; timeoutSeconds = 5; };
+      };
 
       # Two keys out of one Secret, by name. The values never pass through Nix.
       secrets.example-portal-secrets.env = {

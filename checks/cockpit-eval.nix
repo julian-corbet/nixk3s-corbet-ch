@@ -7,11 +7,12 @@
 # and MUST render -- without it, a typo in the shared base would make every other case "pass" for
 # the wrong reason.
 #
-# THREE OF THE REFUSALS ARE NOT GUARDS AT ALL. Naming a face the catalogue does not hold, leaving
-# out the version, and leaving out the namespace fail as a type error and as missing required
-# options -- not as assertions. That is the stronger kind: a boundary nobody has to remember,
-# because it is unwritable rather than refused. `tryEval` cannot tell those apart from a guard, so
-# the ones that ARE guards additionally have their message asserted by content.
+# FOUR OF THE REFUSALS ARE NOT GUARDS AT ALL. Naming a face the catalogue does not hold, leaving
+# out the version, leaving out the namespace, and writing a probe budget with a number missing fail
+# as a type error and as missing required options -- not as assertions. That is the stronger kind:
+# a boundary nobody has to remember, because it is unwritable rather than refused. `tryEval` cannot
+# tell those apart from a guard, so the ones that ARE guards additionally have their message
+# asserted by content.
 #
 # TWO ENVIRONMENTS, because one of the claims is about composition rather than about a value. The
 # cockpit imports the grammar itself, so it must render with nothing else beside it; and it hands
@@ -60,6 +61,8 @@ let
 
   goodCfg = (mkEnv base).config;
 
+  acceptedCfg = (mkEnv (acceptedEmptyStart "the live volume already carries this backing")).config;
+
   with' = f: lib.recursiveUpdate base f;
 
   # The parked declaration, woken up. Every case that needs a SECOND rendered surface starts here,
@@ -70,7 +73,15 @@ let
       posixIdentity = { uid = 4343; gid = 4343; };
       state.appdata.hostPath = "/example/state/example-parked-portal";
       secrets.example-parked-secrets.env.SECRET_ENCRYPTION_KEY = "encryption-key";
+      probes = probeBudget;
     } // extra;
+  };
+
+  # The budget every otherwise-valid surface below carries, so that a case about something else
+  # cannot pass by failing the probe guard instead.
+  probeBudget = {
+    startup = { periodSeconds = 3; failureThreshold = 40; timeoutSeconds = 5; };
+    readiness = { periodSeconds = 5; failureThreshold = 30; timeoutSeconds = 5; };
   };
 
   # The minimum a surface has to say, without the band model in the render at all.
@@ -84,7 +95,18 @@ let
       posixIdentity = { uid = 4242; gid = 4242; };
       state.appdata.hostPath = "/example/state/example-portal";
       secrets.example-portal-secrets.env.SECRET_ENCRYPTION_KEY = "encryption-key";
+      probes = probeBudget;
     } // extra;
+  };
+
+  # The one shape that is legal WITH the creating backing: a surface adopting an object that
+  # already carries it, saying in a sentence why it cannot be moved yet. Every case about the
+  # waiver starts from this, so a refusal cannot pass for the wrong reason.
+  acceptedEmptyStart = reason: with' {
+    nixk3s.cockpit.surfaces.example-portal.state.appdata = {
+      hostPathType = "DirectoryOrCreate";
+      emptyStartAccepted = reason;
+    };
   };
 
   results = {
@@ -124,6 +146,16 @@ let
       goodCfg.nixk3s.apps.example-portal.identity == "root"
       && goodCfg.nixk3s.apps.example-portal.env.PUID == "4242"
       && goodCfg.nixk3s.apps.example-portal.env.PGID == "4242";
+
+    "the catalogue names the probes and the page that answers them, the declaration budgets them" =
+      goodCfg.nixk3s.apps.example-portal.probes.startup.path == "/"
+      && goodCfg.nixk3s.apps.example-portal.probes.startup.port == "http"
+      && goodCfg.nixk3s.apps.example-portal.probes.startup.failureThreshold == 40
+      && goodCfg.nixk3s.apps.example-portal.probes.readiness.periodSeconds == 5
+      && goodCfg.nixk3s.apps.example-portal.probes.liveness == null;
+
+    "nothing is accepted that the catalogue refuses, so the count is empty" =
+      goodCfg.nixk3s.cockpit.emptyStartAccepted == [ ];
 
     "a Secret is named and never carried" =
       goodCfg.nixk3s.apps.example-portal.secrets.example-portal-secrets.env.SECRET_ENCRYPTION_KEY
@@ -170,6 +202,66 @@ let
     "a directory that must already hold data may not be backed by one that gets created" =
       failsWith "must already hold data"
         (with' { nixk3s.cockpit.surfaces.example-portal.state.appdata.hostPathType = "DirectoryOrCreate"; });
+
+    # ── The ONE waivable refusal, and the three fences that keep it from becoming a setting ────
+    # A live object carries the backing it was created with. Writing the safe value is a manifest
+    # change, and on this face that is a stop-then-start against a single-writer database — so an
+    # adoption that cannot say "not yet" is an adoption that never happens, and the object stays
+    # declared somewhere nothing counts it.
+    "an adoption may say WHY it cannot move that backing yet, and then it renders" =
+      renders (acceptedEmptyStart "the live volume already carries this backing");
+
+    "and it warns for as long as it stands, in the catalogue's words and the declaration's" =
+      warnsWith "starts against an EMPTY `appdata`"
+        (acceptedEmptyStart "the live volume already carries this backing")
+      && warnsWith "the live volume already carries this backing"
+        (acceptedEmptyStart "the live volume already carries this backing");
+
+    "and it is countable rather than a paragraph in a commit message" =
+      acceptedCfg.nixk3s.cockpit.emptyStartAccepted == [ "example-portal.appdata" ];
+
+    "accepting an empty start while adopting nothing is refused" =
+      failsWith "is not adopting anything"
+        (lib.recursiveUpdate (acceptedEmptyStart "the live volume already carries this backing") {
+          nixk3s.cockpit.surfaces.example-portal.adopt = lib.mkForce false;
+        });
+
+    "accepting an empty start where nothing refuses one is refused" =
+      failsWith "nothing here refuses one"
+        (with' {
+          nixk3s.cockpit.surfaces.example-portal.state.appdata.emptyStartAccepted =
+            "an acknowledgement of a risk nobody is taking";
+        });
+
+    # ── The probe split, in the failing direction ─────────────────────────────────────────────
+    "leaving a probe the catalogue names unbudgeted is refused" =
+      failsWith "must budget every probe"
+        (lib.recursiveUpdate base {
+          nixk3s.cockpit.surfaces.example-portal.probes = lib.mkForce {
+            startup = { periodSeconds = 3; failureThreshold = 40; timeoutSeconds = 5; };
+          };
+        });
+
+    "budgeting a probe the catalogue does not name is refused" =
+      failsWith "must budget every probe"
+        (with' {
+          nixk3s.cockpit.surfaces.example-portal.probes.nonesuch =
+            { periodSeconds = 1; failureThreshold = 1; timeoutSeconds = 1; };
+        });
+
+    # The reason is asserted rather than the refusal, because a face that must not have a probe and
+    # a message that does not say why is a rule somebody deletes on the next bad night.
+    "budgeting a probe the catalogue REFUSES is refused, in the catalogue's own words" =
+      failsWith "kill it mid-write against a single-writer database"
+        (with' {
+          nixk3s.cockpit.surfaces.example-portal.probes.liveness =
+            { periodSeconds = 10; failureThreshold = 3; timeoutSeconds = 1; };
+        });
+
+    "a probe budget missing a number is not a budget this option has" =
+      !renders (with' {
+        nixk3s.cockpit.surfaces.example-portal.probes.startup = lib.mkForce { periodSeconds = 3; };
+      });
 
     "redefining a variable that describes the container's own insides is refused" =
       failsWith "which the catalogue owns"

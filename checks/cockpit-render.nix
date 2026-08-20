@@ -6,12 +6,14 @@
 # database onto the pod's own filesystem, or carry a uid nothing reads.
 #
 # The assertions below are the module's PROMISES, not a transcript of today's output. A parked
-# declaration renders nothing at all; the catalogue's port, probes and container-internal paths
-# reach the objects without a declaration having stated one; the database sits INSIDE the directory
-# something backs; the identity the image drops to arrives as two numbers and the pod carries no
-# security context of its own; the key that must never change arrives by reference and never as a
-# value; a directory that must already exist is mounted with the backing that refuses to create
-# one; and the Service is a plain in-cluster address with nothing pinned.
+# declaration renders nothing at all; the catalogue's port, the page its probes GET and the
+# container-internal paths reach the objects without a declaration having stated one, while the
+# numbers those probes are budgeted with reach the same objects without the catalogue carrying one;
+# the database sits INSIDE the directory something backs; the identity the image drops to arrives
+# as two numbers and the pod carries no security context of its own; the key that must never change
+# arrives by reference and never as a value; a directory that must already exist is mounted with
+# the backing that refuses to create one; and the Service is a plain in-cluster address with
+# nothing pinned.
 { pkgs, lib, env }:
 
 pkgs.runCommand "nixk3s-cockpit-render"
@@ -86,11 +88,25 @@ pkgs.runCommand "nixk3s-cockpit-render"
   check "secret named"     "example-portal-secrets" "$(secref '.valueFrom.secretKeyRef.name')"
   check "key named"        "encryption-key"         "$(secref '.valueFrom.secretKeyRef.key')"
 
-  echo "== the catalogue's patience reaches the probes, including the one it leaves out =="
-  check "startup periodSeconds"     "3"    "$(y '.spec.template.spec.containers[0].startupProbe.periodSeconds' $deploy)"
-  check "startup failureThreshold"  "40"   "$(y '.spec.template.spec.containers[0].startupProbe.failureThreshold' $deploy)"
-  check "readiness periodSeconds"   "5"    "$(y '.spec.template.spec.containers[0].readinessProbe.periodSeconds' $deploy)"
-  check "no liveness probe"         "null" "$(y '.spec.template.spec.containers[0].livenessProbe' $deploy)"
+  echo "== the probes: the catalogue aims them, the declaration budgets them, both land =="
+  # The two halves are read off ONE object, because the split is only worth something if it
+  # reassembles: a page and a port the declaration never wrote, next to numbers the catalogue does
+  # not carry. Either half missing renders a probe that passes review and fails at three in the
+  # morning.
+  check "startup path (catalogue)"      "/"     "$(y '.spec.template.spec.containers[0].startupProbe.httpGet.path' $deploy)"
+  # The grammar resolves the port NAME the catalogue records to the number behind it, so this is
+  # the same fact as the container port above -- asserted here because a probe pointed at a port
+  # nothing listens on is green in review and dead in the cluster.
+  check "startup port (catalogue)"      "7575"  "$(y '.spec.template.spec.containers[0].startupProbe.httpGet.port' $deploy)"
+  check "startup periodSeconds"         "3"     "$(y '.spec.template.spec.containers[0].startupProbe.periodSeconds' $deploy)"
+  check "startup failureThreshold"      "40"    "$(y '.spec.template.spec.containers[0].startupProbe.failureThreshold' $deploy)"
+  check "startup timeoutSeconds"        "5"     "$(y '.spec.template.spec.containers[0].startupProbe.timeoutSeconds' $deploy)"
+  check "readiness path (catalogue)"    "/"     "$(y '.spec.template.spec.containers[0].readinessProbe.httpGet.path' $deploy)"
+  check "readiness periodSeconds"       "5"     "$(y '.spec.template.spec.containers[0].readinessProbe.periodSeconds' $deploy)"
+  check "readiness failureThreshold"    "30"    "$(y '.spec.template.spec.containers[0].readinessProbe.failureThreshold' $deploy)"
+  # The one the catalogue REFUSES. Its absence is the assertion: a budget cannot conjure it, and a
+  # rendered tree is where that promise is either kept or quietly broken.
+  check "no liveness probe"             "null"  "$(y '.spec.template.spec.containers[0].livenessProbe' $deploy)"
 
   echo "== a slot is a position, never an address: nothing in the tree became a number =="
   check "the surface holds a position" "33" "$portalSlot"

@@ -96,12 +96,16 @@ refusal is asserted, because a guard that fires without naming the app, the
 number and both bands is only half a guard.
 
 `cockpit` is checked the same way in both directions, and its render check reads
-the split back off the bytes: the port, the probes and the container-internal
-paths arrive from the catalogue with the declaration never stating one, the
-database lands inside the directory the declaration backs, the identity the image
-drops to arrives as two numbers while the pod carries no security context of its
-own, and the value that must survive every restart unchanged is a reference and
-never a literal. The env that renders it composes the cockpit *alone* — the
+the split back off the bytes: the port, the page each probe GETs and the
+container-internal paths arrive from the catalogue with the declaration never
+stating one, while the numbers those probes are budgeted with arrive from the
+declaration with the catalogue carrying none — a threshold is a stopwatch held
+against one cluster's disks, and one measured on somebody else's hardware is a
+restart loop on yours. The database lands inside the directory the declaration
+backs, the identity the image drops to arrives as two numbers while the pod
+carries no security context of its own, the probe the catalogue *refuses* is
+absent from the manifest and cannot be budgeted into it, and the value that must
+survive every restart unchanged is a reference and never a literal. The env that renders it composes the cockpit *alone* — the
 grammar comes with it — while the env that renders the grammar composes it
 without the cockpit, which is what keeps "you can take the grammar without the
 catalogue" a checked claim rather than a promise.

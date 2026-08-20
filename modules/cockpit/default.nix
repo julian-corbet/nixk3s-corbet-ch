@@ -37,16 +37,26 @@
 # expressible in the grammar's terms is expressed in them — the image, the ports, the exposure
 # class, whether it may sleep, which directories it writes and what backs them. What this adds is
 # the one thing the grammar cannot know: what a particular face IS. Which of them keeps a database
-# and therefore cannot roll; which must never be started against an empty directory; how patient a
-# probe has to be before it is calling a slow migration a failure.
+# and therefore cannot roll; which must never be started against an empty directory; which probes
+# it needs, what answers them, and which probe it must never be given because the one time it
+# answers late is the migration that must not be interrupted.
 #
 # ── THE KNOWLEDGE/VALUE SPLIT, ENFORCED RATHER THAN TRUSTED ────────────────────────────────────
 #
 # `lib/cockpit.nix` holds what is true of the software anywhere. A declaration holds what is true
 # of one cluster. Neither may supply the other's half: the catalogue says WHERE inside the
-# container a directory lives and only a declaration can say WHAT BACKS IT, the catalogue names the
-# variables that must come from a Secret and only a declaration can name the Secret, and a
-# declaration cannot reach the variables that describe the container's own insides at all.
+# container a directory lives and only a declaration can say WHAT BACKS IT, the catalogue says
+# WHICH probes exist and what page answers them and only a declaration can say HOW LONG each may
+# take, the catalogue names the variables that must come from a Secret and only a declaration can
+# name the Secret, and a declaration cannot reach the variables that describe the container's own
+# insides at all.
+#
+# ONE REFUSAL IS WAIVABLE, AND ONLY IN ONE DIRECTION. A face the catalogue says must never start
+# against an empty directory may be backed by one that creates it — but only by a declaration that
+# is ADOPTING an existing object, that says in a sentence why the safe backing cannot be written
+# yet, and only where the refusal would otherwise have fired. It then warns at every render and
+# appears in `nixk3s.cockpit.emptyStartAccepted`, because the alternative is not a safer cluster:
+# it is the same live object declared outside this module, where nothing counts it at all.
 { config, lib, ... }:
 
 let
@@ -80,12 +90,21 @@ let
         // lib.optionalAttrs (backing.hostPath != null) { inherit (backing) hostPathType; })
       s.state;
 
-  # Every probe the catalogue records, aimed at the port it records, and no probe it deliberately
-  # leaves out. A `null` entry is a decision (see the catalogue's own note on liveness) and is
-  # filtered here rather than handed to the grammar as an absence.
-  probesOf = face:
-    lib.mapAttrs (_: p: { port = face.primaryPort; } // p)
-      (lib.filterAttrs (_: p: p != null) face.probes);
+  # THE SHAPE FROM THE CATALOGUE, THE BUDGET FROM THE DECLARATION, aimed at the port the catalogue
+  # records. Which probes exist and what answers them is true of the software; how long each may
+  # take is a stopwatch held against one cluster's disks, so neither side can supply the other's
+  # half. A probe the catalogue leaves out is not rendered here at all -- and one it REFUSES
+  # (`probesRefused`) cannot be budgeted into existence, which is a guard rather than a filter.
+  probesOf = face: s:
+    lib.mapAttrs
+      (name: shape:
+        let budget = s.probes.${name} or null; in
+        { port = face.primaryPort; }
+        // shape
+        // lib.optionalAttrs (budget != null) {
+          inherit (budget) initialDelaySeconds periodSeconds failureThreshold timeoutSeconds;
+        })
+      face.probes;
 
   # The uid the image drops to, in the spelling the image reads it in. The names are knowledge; the
   # numbers are the consumer's, and they only exist here as two integers on their way into an
@@ -120,7 +139,7 @@ let
       state = stateOf face s;
       secrets = secretsOf s;
       env = face.env // identityEnvOf face s // s.env;
-      probes = probesOf face;
+      probes = probesOf face s;
     }
     // lib.optionalAttrs (s.wake != null) { inherit (s) wake; }
     // lib.optionalAttrs (s.slot != null && addressingComposed) {
@@ -165,14 +184,84 @@ let
             !(face.state ? ${key})
             || !(face.state.${key}.mustExist or false)
             || backing.hostPath == null
-            || backing.hostPathType == "Directory";
+            || backing.hostPathType == "Directory"
+            || backing.emptyStartAccepted != null;
           message =
             "nixk3s.cockpit: surface `${name}` backs `${key}` with a node path that is CREATED when "
             + "missing (`hostPathType = \"${backing.hostPathType}\"`), and the catalogue says that "
             + "directory must already hold data: ${face.state.${key}.mustExistReason or ""}. Back it "
-            + "with `\"Directory\"`, which refuses to start the pod instead.";
+            + "with `\"Directory\"`, which refuses to start the pod instead -- or, if the LIVE object "
+            + "already carries the creating backing and moving it is a rollout this change is not "
+            + "allowed to make, say why in `emptyStartAccepted` and the exception becomes a warning "
+            + "and a countable entry instead of a paragraph in a commit message.";
+        })
+        s.state
+
+      # AND THE TWO GUARDS THAT KEEP THAT WAIVER FROM BECOMING A SETTING. The first reads the value
+      # as its own first term, on every path, so the option is type-checked for a declaration that
+      # never uses it; the second is the only thing that stops "accepted" from being the shortest
+      # way past a refusal somebody found inconvenient.
+      ++ lib.mapAttrsToList
+        (key: backing: {
+          assertion =
+            backing.emptyStartAccepted == null
+            || ((face.state.${key}.mustExist or false)
+            && backing.hostPath != null
+            && backing.hostPathType == "DirectoryOrCreate");
+          message =
+            "nixk3s.cockpit: surface `${name}` accepts an empty start for `${key}` and nothing here "
+            + "refuses one -- either the catalogue does not say that directory must already hold "
+            + "data, or the backing already refuses to create it. An acknowledgement of a risk "
+            + "nobody is taking outlives the risk and then reads as permission: delete it.";
+        })
+        s.state
+      ++ lib.mapAttrsToList
+        (key: backing: {
+          assertion = backing.emptyStartAccepted == null || s.adopt;
+          message =
+            "nixk3s.cockpit: surface `${name}` accepts an empty start for `${key}` and is not "
+            + "adopting anything (`adopt = false`). The one thing that acceptance can honestly mean "
+            + "is that a LIVE object already carries the creating backing and changing it is a "
+            + "manifest change -- which on a face whose database forces `Recreate` is a "
+            + "stop-then-start, not a rolling update. On an object nobody has created yet there is "
+            + "nothing to accept: write `\"Directory\"` and the pod refuses to start against "
+            + "nothing.";
         })
         s.state)
+    surfaces;
+
+  # ── PROBES: the catalogue names them, the declaration budgets them ────────────────────────────
+  probeAssertions = lib.concatMap
+    (x:
+      let
+        inherit (x) name s face;
+        refused = lib.attrNames (face.probesRefused or { });
+        needed = lib.attrNames face.probes;
+        budgeted = lib.attrNames (removeAttrs s.probes refused);
+      in
+      [
+        {
+          assertion = budgeted == needed;
+          message =
+            "nixk3s.cockpit: surface `${name}` must budget every probe the catalogue says this face "
+            + "needs, and budgets "
+            + (if budgeted == [ ] then "none" else lib.concatMapStringsSep ", " (k: "`${k}`") budgeted)
+            + ". It needs: "
+            + (if needed == [ ] then "none"
+            else lib.concatStringsSep ", " (lib.mapAttrsToList (k: v: "`${k}` on ${v.path}") face.probes))
+            + ". The catalogue knows WHICH probes there are and WHAT answers them; how long each may "
+            + "take is a measurement of one cluster's disks, so the numbers are this declaration's "
+            + "and are defaulted nowhere.";
+        }
+      ]
+      ++ map
+        (probe: {
+          assertion = !(s.probes ? ${probe});
+          message =
+            "nixk3s.cockpit: surface `${name}` budgets a `${probe}` probe and the catalogue says "
+            + "this face must not have one: ${face.probesRefused.${probe}}.";
+        })
+        refused)
     surfaces;
 
   envAssertions = lib.concatMap
@@ -286,10 +375,28 @@ let
   ## and the renderer decides whether to print it.
   ## ---------------------------------------------------------------------
 
+  # ACCEPTED, NOT SILENT. The refusal in `stateAssertions` is waived by a declaration that says
+  # why, and this is what the waiver costs: a sentence at every render naming the directory, the
+  # risk in the catalogue's own words, and the reason it is being taken anyway. A warning nobody
+  # can turn off is the honest price of an exception only a live object can justify.
+  emptyStartWarnings = x:
+    let inherit (x) name s face; in
+    lib.mapAttrsToList
+      (key: backing: {
+        when = backing.emptyStartAccepted != null;
+        message =
+          "nixk3s.cockpit: surface `${name}` starts against an EMPTY `${key}` rather than "
+          + "refusing to: ${face.state.${key}.mustExistReason or ""}. Accepted here because: "
+          + "${backing.emptyStartAccepted or ""}. That reason expires the day the object can be "
+          + "rolled; `hostPathType = \"Directory\"` is the fix and this line is the reminder.";
+      })
+      s.state;
+
   warnings = lib.concatMap
     (x:
       let inherit (x) name s face; in
-      [
+      emptyStartWarnings x
+      ++ [
         {
           when = s.scaling == "scale-to-zero" && s.wake == null;
           message =
@@ -300,7 +407,7 @@ let
         }
         {
           when = s.exposure == "public" && face.authProviderEnv != null
-            && !(s.env ? ${face.authProviderEnv});
+          && !(s.env ? ${face.authProviderEnv});
           message =
             "nixk3s.cockpit: surface `${name}` is exposed to the internet and sets no "
             + "`${face.authProviderEnv}`, so nothing in this declaration says how it authenticates "
@@ -486,6 +593,84 @@ let
                 start, it is a healthy pod with none of your data in it.
               '';
             };
+
+            emptyStartAccepted = lib.mkOption {
+              type = lib.types.nullOr lib.types.str;
+              default = null;
+              example = "the live volume already carries this backing and the object may not roll yet";
+              description = ''
+                WHY this deployment takes the risk the catalogue refuses, in a sentence. Setting it
+                turns that refusal into a warning at every render and an entry in
+                `nixk3s.cockpit.emptyStartAccepted`; leaving it `null` (the default) leaves the
+                refusal a refusal.
+
+                THERE IS EXACTLY ONE HONEST REASON and the module holds the declaration to it. An
+                object that ALREADY EXISTS carries the backing it was created with, and changing
+                that field is a manifest change — which on a face whose database forces `Recreate`
+                stops the pod before starting the new one. A declaration adopting such an object
+                cannot write the safe value without scheduling the outage, and pretending otherwise
+                would mean either a silent rollout or an adoption that never happens.
+
+                So it is fenced on four sides rather than trusted: it demands a REASON rather than a
+                boolean, it is refused unless the surface is `adopt`ing something, it is refused
+                where nothing would have been refused anyway (an acknowledgement of a risk nobody is
+                taking outlives the risk and starts reading as permission), and it warns at every
+                render for as long as it stands. What it is NOT is a way to make the catalogue's
+                knowledge optional: the risk does not go away because a deployment described it.
+              '';
+            };
+          };
+        });
+      };
+
+      probes = lib.mkOption {
+        default = { };
+        example = lib.literalExpression ''
+          { startup   = { periodSeconds = 3; failureThreshold = 40; timeoutSeconds = 5; };
+            readiness = { periodSeconds = 5; failureThreshold = 30; timeoutSeconds = 5; };
+          }
+        '';
+        description = ''
+          HOW PATIENT each probe is on THIS cluster, keyed by the SAME names the catalogue uses.
+          Budgeting a probe the catalogue does not name, or leaving one it does name unbudgeted, is
+          an eval error rather than a surprise at runtime — and a probe the catalogue REFUSES
+          cannot be budgeted at all, with its reason quoted back.
+
+          THE SPLIT, and why the numbers are here rather than in the catalogue. Which probes a face
+          needs, and what answers them, is true of the software wherever it runs. A threshold is a
+          stopwatch held against one cluster's disks: the first-boot migration that finishes inside
+          ninety seconds on a mirror of SSDs takes minutes on a loaded spindle, and a number
+          measured on somebody else's hardware is a restart loop on yours. Nothing is defaulted, for
+          the same reason a floating tag is not a default — a patience nobody measured is not a
+          value anyone may pick on somebody else's behalf.
+        '';
+        type = lib.types.attrsOf (lib.types.submodule {
+          options = {
+            initialDelaySeconds = lib.mkOption {
+              type = lib.types.ints.unsigned;
+              default = 0;
+              description = ''
+                Delay before the first probe. The one number with a default, because zero is not a
+                measurement — it is the absence of a delay, and a probe that starts immediately and
+                is allowed to fail is the shape every budget below already describes.
+              '';
+            };
+            periodSeconds = lib.mkOption {
+              type = lib.types.ints.positive;
+              description = "Interval between probes.";
+            };
+            failureThreshold = lib.mkOption {
+              type = lib.types.ints.positive;
+              description = ''
+                Consecutive failures before the verdict is acted on. With `periodSeconds` this is
+                the whole budget: their product is how long a slow start is tolerated before the
+                container is restarted or held out of the Service.
+              '';
+            };
+            timeoutSeconds = lib.mkOption {
+              type = lib.types.ints.positive;
+              description = "How long one probe may take before it counts as failed.";
+            };
           };
         });
       };
@@ -577,6 +762,27 @@ in
       type = lib.types.attrsOf (lib.types.submodule surfaceOptions);
     };
 
+    emptyStartAccepted = lib.mkOption {
+      type = lib.types.listOf lib.types.str;
+      readOnly = true;
+      default = lib.concatMap
+        (x: lib.mapAttrsToList (key: _: "${x.name}.${key}")
+          (lib.filterAttrs (_: b: b.emptyStartAccepted != null) x.s.state))
+        surfaces;
+      defaultText = lib.literalExpression
+        "every `<surface>.<directory>` whose backing is allowed to create it when it is missing";
+      description = ''
+        The directories a declaration is allowed to start empty against, in the face of a catalogue
+        entry saying they must already hold data. Read-only, and COUNTABLE on purpose, for the same
+        reason the grammar counts its escape hatch: an exception nobody measures becomes the design.
+
+        Every entry here is a live object that cannot take the safe backing without a rollout, so
+        the list going down is a real migration and the list going up is a decision somebody made.
+        A consumer can assert on it — most usefully that it is empty, or that it holds exactly the
+        objects it held yesterday.
+      '';
+    };
+
     slots = lib.mkOption {
       type = lib.types.attrsOf lib.types.ints.unsigned;
       readOnly = true;
@@ -593,7 +799,8 @@ in
   config = {
     nixk3s.apps = lib.listToAttrs (map (x: lib.nameValuePair x.name (mkApp x)) surfaces);
     nixidy.assertions =
-      stateAssertions ++ envAssertions ++ identityAssertions ++ anchorAssertions ++ slotAssertions;
+      stateAssertions ++ probeAssertions ++ envAssertions ++ identityAssertions ++ anchorAssertions
+      ++ slotAssertions;
     nixidy.warnings = warnings;
   };
 }

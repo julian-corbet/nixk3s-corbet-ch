@@ -14,11 +14,13 @@
 #
 # WHAT IS KNOWLEDGE AND WHAT IS A VALUE. Everything here is true of the software wherever anyone
 # runs it: the port it listens on, the directories it writes, which of them must already hold data,
-# which variables name a path inside its own container, how patient a probe has to be, what its
-# entrypoint does before it drops privileges. Nothing here names an address, a node, a hostname, a
-# namespace, a uid or a secret's contents — those are one deployment's facts and they arrive from
-# the consumer. The split is enforced rather than trusted: `state` here is the path INSIDE the
-# container, and only a declaration can say what backs it.
+# which variables name a path inside its own container, which probes it needs and what answers
+# them, what its entrypoint does before it drops privileges. Nothing here names an address, a node,
+# a hostname, a namespace, a uid or a secret's contents — those are one deployment's facts and
+# they arrive from the consumer. The split is enforced rather than trusted: `state` here is the
+# path INSIDE the container, and only a declaration can say what backs it; `probes` here is which
+# probes exist and what they GET, and only a declaration can say how long each may take, because a
+# threshold is a measurement of hardware this file has never seen.
 #
 # ONE ENTRY, DELIBERATELY. Two more faces are owned by the same decision that produced this file
 # and neither is catalogued: one of them is the spine itself, bootstrapped before any Application
@@ -97,20 +99,31 @@
       # what lets a surface exposed to the internet with nothing selected be noticed.
       authProviderEnv = "AUTH_PROVIDERS";
 
-      # PATIENCE, MEASURED ON THE WORKLOAD THIS WAS EXTRACTED FROM. The startup probe owns the
-      # cold-boot window -- node boot plus database migrations -- so readiness never has to be slack
-      # enough to cover it and never flaps under host I/O load. Readiness gates the Service
-      # endpoint, which is what makes a held request from a wake front arrive only once the HTTP
-      # server actually answers.
+      # WHICH PROBES THIS FACE NEEDS AND WHAT ANSWERS THEM -- the SHAPE, and only the shape. The
+      # startup probe owns the cold-boot window (node boot plus database migrations), so readiness
+      # never has to be slack enough to cover it and never flaps under host I/O load; readiness
+      # gates the Service endpoint, which is what makes a held request from a wake front arrive
+      # only once the HTTP server actually answers. One page answers both, and it is the same page
+      # a browser gets -- there is no cheaper health endpoint to name, and saying so is knowledge.
+      #
+      # HOW PATIENT each of them is, is deliberately NOT here. A threshold is a stopwatch held
+      # against one cluster's disks: the migration that finishes in ninety seconds on a mirror of
+      # SSDs takes minutes on a loaded spindle, and a number measured on somebody else's hardware
+      # is a restart loop on yours. The budget belongs to the declaration and it is defaulted
+      # nowhere, for the same reason a floating tag is not a default: a patience nobody measured is
+      # not a value anyone may pick on somebody else's behalf.
       probes = {
-        startup = { path = "/"; periodSeconds = 3; failureThreshold = 40; timeoutSeconds = 5; };
-        readiness = { path = "/"; periodSeconds = 5; failureThreshold = 30; timeoutSeconds = 5; };
-
-        # NO LIVENESS PROBE, and its absence is a decision rather than an omission: a slow migration
-        # answering "/" late would restart the container mid-write against a single-writer database.
-        # Startup plus readiness is the whole safe set here.
-        liveness = null;
+        startup.path = "/";
+        readiness.path = "/";
       };
+
+      # THE PROBE THIS FACE MUST NOT HAVE. Not an omission, and not a default a declaration may
+      # override -- budgeting one is refused, with this sentence quoted back at whoever wrote it.
+      probesRefused.liveness =
+        "a liveness probe restarts the container whenever \"/\" answers late, and the one time "
+        + "this face answers late is the database migration it runs on first start -- so the probe "
+        + "would kill it mid-write against a single-writer database. Startup plus readiness is the "
+        + "whole safe set here";
 
       note = ''
         THE PORTAL: one page that is the front door to the platform's own surfaces, with tiles that

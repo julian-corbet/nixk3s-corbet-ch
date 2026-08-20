@@ -17,15 +17,21 @@ app grammar.
     state.appdata.hostPath = "/the/directory/that/already/holds/it";
     secrets.portal-secrets.env.SECRET_ENCRYPTION_KEY = "encryption-key";
     env.AUTH_PROVIDERS = "oidc";
+    probes = {
+      startup = { periodSeconds = 3; failureThreshold = 40; timeoutSeconds = 5; };
+      readiness = { periodSeconds = 5; failureThreshold = 30; timeoutSeconds = 5; };
+    };
   };
 }
 ```
 
 That renders an Argo CD Application, a Namespace, a Deployment that cannot roll
 (the face keeps a single-writer database) and a ClusterIP Service — with the
-port, the probes, the container-internal paths, the entrypoint's root-then-drop
-behaviour and the reason the directory must already exist all coming from the
-catalogue rather than from the declaration.
+port, *which* probes exist and the page that answers them, the
+container-internal paths, the entrypoint's root-then-drop behaviour and the
+reason the directory must already exist all coming from the catalogue rather
+than from the declaration, and the numbers those probes are budgeted with coming
+from the declaration rather than from the catalogue.
 
 ## Why a catalogue is allowed to exist here at all
 
@@ -88,10 +94,10 @@ half, and that is an eval error rather than a convention:
 | That the image starts as root and drops privileges, and through which variables | Which uid and gid it drops to |
 | Which variables name the container's own insides (its database, its cache, its fallback directory) | Everything else, merged over them |
 | Which variables must arrive from a Secret | Which Secret, and which key inside it |
-| How patient each probe has to be, and which probe is deliberately absent | — |
+| Which probes the face needs, what page answers them, and which probe it must **never** be given | How patient each of them is on this cluster's disks |
 | The image repository | The version, or a whole digest-pinned reference |
 
-Eleven guards keep the split honest. A directory the face does not write cannot
+Fifteen guards keep the split honest. A directory the face does not write cannot
 be backed, and one it does write cannot be left unbacked. A directory can carry
 exactly one backing. A directory the catalogue marks as having to hold data
 already cannot be backed by one that gets created — that failure is not a pod
@@ -104,15 +110,51 @@ committed. An image that drops privileges must be handed the identity it drops
 to, and one that does not must not be handed one, because an identity nothing
 reads is worse than none. Exactly one surface may anchor a namespace, one
 position may be claimed by one surface, and a position claimed with no band
-model in the render is refused by name.
+model in the render is refused by name. Every probe the catalogue names must be
+budgeted and no probe it does not name may be, a budget with a number missing is
+not a value the option has, and budgeting a probe the catalogue *refuses* is
+refused with the catalogue's reason quoted back — for this face, that a liveness
+probe restarts the container whenever `/` answers late, and the one time it
+answers late is the first-boot migration that must not be interrupted.
+
+### One refusal is waivable, in one direction only
+
+A directory the catalogue says must already hold data may be backed by one that
+creates it — but only by a declaration that has said, in a sentence, why:
+
+```nix
+state.appdata = {
+  hostPath = "/the/directory/that/already/holds/it";
+  hostPathType = "DirectoryOrCreate";
+  emptyStartAccepted = "the live object already carries this backing and moving it is a rollout";
+};
+```
+
+There is exactly one honest reason and the module holds a declaration to it. A
+live object carries the backing it was created with; writing the safe value is a
+*manifest change*, and on a face whose database forces `Recreate` that is a
+stop-then-start rather than a rolling update. An adoption that cannot say "not
+yet" is an adoption that never happens — and the object then stays declared
+somewhere that counts nothing at all, which is strictly worse than an exception
+with a name on it.
+
+So it is fenced on four sides rather than trusted: it demands a **reason**
+rather than a boolean; it is refused unless the surface is `adopt`ing something;
+it is refused where nothing would have been refused anyway, because an
+acknowledgement of a risk nobody is taking outlives the risk and starts reading
+as permission; and it **warns at every render** for as long as it stands,
+quoting the catalogue's danger and the declaration's excuse in the same
+sentence. Every one lands in `nixk3s.cockpit.emptyStartAccepted`, read-only and
+countable for the same reason the grammar counts its escape hatch: an exception
+nobody measures becomes the design.
 
 Two mistakes **warn** rather than refuse, for the same reason in both cases —
 what a cluster routes, and what sits in front of a face, are things one
 deployment can see and this repository cannot: a surface that sleeps with no
 wake front (nothing brings it back, and a cockpit you cannot open is worse than
 one that is merely slow, because you reach for it exactly when something else is
-wrong), and a surface exposed to the internet that selects no authentication
-provider.
+wrong), a surface exposed to the internet that selects no authentication
+provider, and — for as long as it stands — every accepted empty start.
 
 ## Addressing
 
