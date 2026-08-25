@@ -59,8 +59,8 @@ let
     "an undeclared surface renders no apps at all, rather than a default one" =
       emptyCfg.nixk3s.apps == { };
 
-    "both declared workloads reach the grammar" =
-      lib.sort (a: b: a < b) (lib.attrNames (mkEnv base).config.nixk3s.apps) == [ "one" "two" ];
+    "every declared workload reaches the grammar, and nothing else does" =
+      lib.sort (a: b: a < b) (lib.attrNames (mkEnv base).config.nixk3s.apps) == [ "lock" "one" "two" ];
 
     # ── The split, refused in both directions ────────────────────────────────────────────────
     "a directory the catalogue names and nothing backs is refused" =
@@ -225,6 +225,61 @@ let
         nixconsumer.applications.two.version = lib.mkForce null;
         nixconsumer.applications.two.image = "registry.example.com/example-org/beta@sha256:0000000000000000000000000000000000000000000000000000000000000000";
       });
+
+    # ── The catalogue's own limits, and the declaration's ────────────────────────────────────
+    "a backing the catalogue does not accept for that directory is refused" =
+      failsWith "does not accept for it"
+        (with' { nixconsumer.applications.one.state.data = lib.mkForce { emptyDir = true; }; });
+
+    "the same directory on a backing it does accept renders" =
+      renders (with' {
+        nixconsumer.applications.one.state.data = lib.mkForce { claim = "example-claim"; };
+      });
+
+    "a second copy of a single writer is refused" =
+      failsWith "catalogued as a single writer"
+        (with' { nixconsumer.applications.one.replicas = 2; });
+
+    "one copy of it is not" =
+      renders (with' { nixconsumer.applications.one.replicas = 1; });
+
+    "a volume renamed to something Kubernetes will not accept is refused" =
+      failsWith "will not accept as a name"
+        (with' { nixconsumer.applications.one.state.data.volumeName = "Not_A_Label"; });
+
+    "software nobody publishes an image for, declared without one, is refused" =
+      failsWith "nobody publishes an image for"
+        (with' {
+          nixconsumer.applications.four = {
+            app = "delta";
+            version = "1.0.0";
+            namespace = "example-consumer";
+          };
+        });
+
+    "and the same entry with a whole reference renders" =
+      renders (with' {
+        nixconsumer.applications.four = {
+          app = "delta";
+          image = "registry.example.com/example-org/delta@sha256:0000000000000000000000000000000000000000000000000000000000000000";
+          namespace = "example-consumer";
+        };
+      });
+
+    # ── The catalogue's voice, kept ──────────────────────────────────────────────────────────
+    # Centralising the guard must not centralise the sentence: the generic half says which rule
+    # fired, and the catalogue's half says what it means for THIS software.
+    "a refusal carries the catalogue's own reason, appended to the factory's" =
+      failsWith "The reminder it sends is the one nobody is waiting for."
+        (with' {
+          nixconsumer.applications.one.scaling = "scale-to-zero";
+          nixconsumer.applications.one.wake = "keda";
+        });
+
+    "a catalogue that asks for a warning gets one rather than a refusal" =
+      warnsWith "asks nobody for anything"
+        (with' { nixconsumer.applications.two.exposure = "public"; })
+      && renders (with' { nixconsumer.applications.two.exposure = "public"; });
 
     "a catalogue entry that does not exist cannot be named" =
       !renders (with' { nixconsumer.applications.one.app = "not-in-the-catalogue"; });

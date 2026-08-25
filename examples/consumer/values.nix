@@ -14,6 +14,10 @@
 
   # The fleet's identity registry: what a ROLE means in numbers here. A catalogue names a role and
   # never a number, and this is the only place the two meet.
+  # What this site calls the device the grammar requests. Never guessed: a device request under a
+  # name the cluster does not advertise is a pod that never schedules.
+  nixk3s.appPlatform.gpuResourceName = "example.com/gpu";
+
   nixk3s.appPlatform.identities.example-role = {
     uid = 3001;
     gid = 3001;
@@ -27,6 +31,14 @@
   };
 
   nixconsumer.applications = {
+    # Keeps nothing the grammar can see, and must still never run twice. The only thing standing
+    # between this and a rolling update is the catalogue's own word.
+    lock = {
+      app = "epsilon";
+      version = "2.1.0";
+      exposure = "internal";
+    };
+
     one = {
       app = "alpha";
       version = "1.4.2";
@@ -83,6 +95,13 @@
 
       # A ROLE, resolved against the platform's identity registry below.
       identity = "example-role";
+
+      # The live objects call this one something else. A rename is a delete and a create, never an
+      # edit, so adopting a cluster's history means saying what it already calls things.
+      objectName = "example-beta-renamed";
+
+      # Stateless, and the catalogue does not call it a single writer, so more than one is legal.
+      replicas = 2;
 
       # `harden` is left at its default with a catalogue that states no hardening classes. The
       # question this answers is whether that renders nothing or throws.

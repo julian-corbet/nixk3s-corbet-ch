@@ -100,6 +100,11 @@ let
   # A whole reference wins over a repository plus a tag, which is what pinning by digest looks
   # like. The catalogue never carries either: a version is a deployment's choice and a digest is
   # one deployment's proof of what it is running.
+  # A CATALOGUE ENTRY MAY HAVE NO IMAGE AT ALL -- software nobody publishes a container for, where
+  # upstream ships a build recipe and you bring your own. That is a fact about the software, so it
+  # is the catalogue's to state, and a declaration must then carry a whole reference. Guarded
+  # below rather than here: reaching for `"${null}:${version}"` replaces a sentence somebody can
+  # act on with a coercion error.
   imageOf = entry: w:
     if w.image != null then w.image else "${entry.image}:${w.version}";
 
@@ -118,6 +123,28 @@ let
   # was waiting for them.
   sharedStateKeys = entry: w:
     lib.filter (k: (entry.state or { }) ? ${k}) (lib.attrNames w.state);
+
+  # WHICH BACKINGS THIS SOFTWARE ACCEPTS, when the catalogue has an opinion. Five are offered; a
+  # database accepts two. `emptyDir` under a database is a directory that is discarded on exactly
+  # the restart the state exists to survive, and offering it at all is offering a silent disaster
+  # -- so a catalogue may name the subset it tolerates and the rest stop being expressible.
+  #
+  # The default is every backing, because a catalogue that has not thought about it should not be
+  # narrowing anything by accident.
+  allBackings = [ "claim" "hostPath" "configMap" "secret" "emptyDir" ];
+
+  backingsAllowed = entry: key:
+    let e = entry.state.${key} or null; in
+    if lib.isString e || e == null then allBackings else (e.backings or allBackings);
+
+  backingChosen = backing:
+    lib.head (lib.filter (b: b != null) [
+      (if backing.claim != null then "claim" else null)
+      (if backing.hostPath != null then "hostPath" else null)
+      (if backing.configMap != null then "configMap" else null)
+      (if backing.secret != null then "secret" else null)
+      (if backing.emptyDir then "emptyDir" else null)
+    ] ++ [ null ]);
 
   stateOf = entry: w:
     lib.mapAttrs'
@@ -290,7 +317,23 @@ let
         probes = probesOf entry w;
         security = securityOf entry w;
         resources = resourcesOf w;
+
+        # THREE TERMS THE GRAMMAR HAS AND THIS FACTORY NEVER FORWARDED. Each is a fact about the
+        # software, stated in a catalogue, that reached the grammar in some hand-written
+        # translators and not others -- the exact failure this file exists to end, reproduced
+        # inside it.
+        #
+        # `singleWriter` is the sharp one. A catalogue saying two copies of this must never run at
+        # once, on software whose state is not a directory the grammar can see, renders a ROLLING
+        # UPDATE without it: two processes briefly sharing a warm store, which is the hazard the
+        # field was added to name. One repository in this family had exactly that, declared and
+        # dropped, and was safe only where a node path happened to force Recreate anyway.
+        command = entry.command or [ ];
+        gpu = entry.gpu or false;
+        singleWriter = entry.singleWriter or false;
       }
+      // lib.optionalAttrs (w.objectName != null) { name = w.objectName; }
+      // lib.optionalAttrs (w.replicas != null) { inherit (w) replicas; }
       // lib.optionalAttrs (w.wake != null) { inherit (w) wake; }
       // identityOf entry w
       // addressingOf w
@@ -343,6 +386,21 @@ let
           message =
             "${namespace}: workload `${name}` renames two directories onto one volume name. One of "
             + "them would simply not be mounted, and which one is an accident of attribute order.";
+        }
+        {
+          # THE CATALOGUE'S OWN SHORTLIST. Five backings exist; a catalogue that names fewer is
+          # saying this software cannot survive the others, and the refused one is refused rather
+          # than merely discouraged.
+          assertion = lib.all
+            (key:
+              let chosen = backingChosen w.state.${key}; in
+              chosen == null || lib.elem chosen (backingsAllowed entry key))
+            (sharedStateKeys entry w);
+          message =
+            "${namespace}: workload `${name}` backs a directory with something `${w.${selector}}` "
+            + "does not accept for it. The catalogue names what this software's data can live on, "
+            + "and the rest are not a worse choice, they are a silent one -- a scratch directory "
+            + "under a database is discarded on exactly the restart that state exists to survive.";
         }
         {
           # The catalogue's half of an ownership decision: a directory it says GROWS must never be
@@ -432,13 +490,23 @@ let
   # workload with no reference at all is one nothing can start.
   imageAssertions = lib.concatMap
     (x:
-      let inherit (x) name w; in
+      let inherit (x) name w entry; in
       [{
         assertion = w.image != null || w.version != null;
         message =
           "${namespace}: workload `${name}` says neither which version it runs nor a whole image "
           + "reference. One of them decides what starts, and there is no third place for that to "
           + "come from.";
+      }
+      {
+        # The catalogue's half of the same question, checked so the failure is this sentence
+        # rather than a coercion error thrown while building a tag out of null.
+        assertion = (entry.image or null) != null || w.image != null;
+        message =
+          "${namespace}: workload `${name}` runs `${w.${selector}}`, which nobody publishes an "
+          + "image for -- the catalogue holds a build recipe rather than a repository, so a "
+          + "version has nothing to be a tag OF. This declaration must carry a whole image "
+          + "reference, for a container somebody built.";
       }])
     workloads;
 
@@ -446,18 +514,51 @@ let
   # warns. A catalogue says a workload is unsafe to idle when it has work that happens while nobody
   # is looking -- a timer, a queue, a directory watch. Scaling that to zero does not make it slow,
   # it makes it silently not happen.
-  idleAssertions = lib.concatMap
-    (x:
-      let inherit (x) name w entry; in
-      [{
-        assertion = w.scaling != "scale-to-zero" || (entry.idleSafe or true);
-        message =
-          "${namespace}: workload `${name}` is declared scale-to-zero, and `${w.${selector}}` is "
-          + "catalogued as unsafe to idle -- it has work that happens while nobody is looking. At "
-          + "zero replicas that work does not happen late, it does not happen. Leave it `always` "
-          + "and idle whatever fronts it instead.";
-      }])
-    workloads;
+  # THE CATALOGUE SAYS HOW LOUD, AND WHY. Two repositories disagreed about idle-safety and both
+  # were right for their own software: one refuses it, one warns. Centralising on a single fixed
+  # message would have made that a coin-toss and thrown away the better sentence -- the guard that
+  # reads "the request that would have woken it is the request that was supposed to be delivered"
+  # tells somebody what went wrong; "idle whatever fronts it instead" tells them a rule.
+  #
+  # So a catalogue may state a severity, and may state the reason in its own words. The factory
+  # owns the CHECK; the catalogue owns how hard it bites and what it says about this software.
+  severityOf = entry: field: default:
+    let v = entry.${field} or null; in
+    if v == null || !(lib.isAttrs v) then default else (v.severity or default);
+
+  becauseOf = entry: field:
+    let v = entry.${field} or null; in
+    if v == null || !(lib.isAttrs v) then null else (v.because or null);
+
+  # A catalogue's own sentence, appended to the factory's. Never replacing it: the generic half
+  # says which rule fired, which is what makes a message searchable across thirteen repositories.
+  withBecause = entry: field: message:
+    let b = becauseOf entry field; in
+    message + lib.optionalString (b != null) (" " + b);
+
+  # `idleSafe = false` and `idleSafe = { safe = false; severity = "warn"; because = "..."; }` are
+  # the same fact stated at two volumes. The bare boolean refuses, because that is the answer that
+  # protects work nobody is watching; a catalogue that has measured its own software and knows the
+  # loss is tolerable says so explicitly.
+  idleSafeOf = entry:
+    let v = entry.idleSafe or true; in
+    if lib.isAttrs v then (v.safe or true) else v;
+
+  idleUnsafe = x: x.w.scaling == "scale-to-zero" && !(idleSafeOf x.entry);
+
+  idleMessage = x:
+    withBecause x.entry "idleSafe"
+      ("${namespace}: workload `${x.name}` is declared scale-to-zero, and `${x.w.${selector}}` is "
+        + "catalogued as unsafe to idle -- it has work that happens while nobody is looking. At "
+        + "zero replicas that work does not happen late, it does not happen.");
+
+  idleAssertions = map
+    (x: { assertion = !(idleUnsafe x); message = idleMessage x; })
+    (lib.filter (x: severityOf x.entry "idleSafe" "refuse" == "refuse") workloads);
+
+  idleWarnings = map
+    (x: { when = idleUnsafe x; message = idleMessage x; })
+    (lib.filter (x: severityOf x.entry "idleSafe" "refuse" == "warn") workloads);
 
   # Both directions again. A dependency the catalogue names and the declaration leaves out is a
   # workload started without knowing where something is; one the declaration names and the
@@ -635,6 +736,68 @@ let
             + "whatever the image's own USER is, while this declaration looks like it decided.";
         }
       ])
+    workloads;
+
+  # A RENAMED VOLUME MUST STILL BE A NAME. `volumeName` exists to match what a live object already
+  # calls a volume, and that name is an RFC 1123 DNS label. Anything else renders perfectly and is
+  # rejected by the API server at apply time, which is the worst place to find out.
+  isDnsLabel = n:
+    n != "" && lib.stringLength n <= 63
+    && builtins.match "[a-z0-9]([-a-z0-9]*[a-z0-9])?" n != null;
+
+  volumeNameAssertions = lib.concatMap
+    (x:
+      let
+        inherit (x) name w;
+        bad = lib.filter (k: !(isDnsLabel (volumeNameOf w k))) (lib.attrNames w.state);
+      in
+      [{
+        assertion = bad == [ ];
+        message =
+          "${namespace}: workload `${name}` renames "
+          + lib.concatMapStringsSep ", " (k: "`${k}` to `${volumeNameOf w k}`") bad
+          + ", which Kubernetes will not accept as a name -- lowercase letters, digits and dashes, "
+          + "starting and ending with a letter or a digit. This renders and then fails at apply.";
+      }])
+    workloads;
+
+  # WHAT IT ASKS OF WHOEVER REACHES IT, against how far it is published. The same shape as the idle
+  # guard: a catalogue fact crossed with a declaration's choice. Software that authenticates nobody,
+  # published, is readable and rewritable by whoever finds it -- and an exposure class is a property
+  # of the WORKLOAD, so there is no publishing half of it and no port to publish on its own.
+  authUnsafe = x: !(authenticatesOf x.entry) && x.w.exposure == "public";
+
+  authenticatesOf = entry:
+    let v = entry.authenticates or true; in
+    if lib.isAttrs v then (v.authenticates or true) else v;
+
+  authMessage = x:
+    withBecause x.entry "authenticates"
+      ("${namespace}: workload `${x.name}` is declared `public`, and `${x.w.${selector}}` asks "
+        + "nobody for anything -- there is no login on it at all, so whoever reaches it can read "
+        + "and rewrite everything in it.");
+
+  authAssertions = map
+    (x: { assertion = !(authUnsafe x); message = authMessage x; })
+    (lib.filter (x: severityOf x.entry "authenticates" "refuse" == "refuse") workloads);
+
+  authWarnings = map
+    (x: { when = authUnsafe x; message = authMessage x; })
+    (lib.filter (x: severityOf x.entry "authenticates" "refuse" == "warn") workloads);
+
+  # TWO COPIES OF A SINGLE WRITER IS NOT A SCALING DECISION. The catalogue knows whether the
+  # software tolerates it; nothing about one cluster's load changes the answer.
+  replicaAssertions = lib.concatMap
+    (x:
+      let inherit (x) name w entry; in
+      [{
+        assertion = w.replicas == null || w.replicas <= 1 || !(entry.singleWriter or false);
+        message =
+          "${namespace}: workload `${name}` asks for ${toString w.replicas} copies, and "
+          + "`${w.${selector}}` is catalogued as a single writer -- it holds a store that exactly "
+          + "one process may have open. A second copy does not share the load, it corrupts the "
+          + "store, and the symptom arrives long after the change that caused it.";
+      }])
     workloads;
 
   # A public URL nothing reads is not harmless -- it is somebody believing they configured a link
@@ -920,6 +1083,29 @@ let
         Whole image reference, replacing the catalogue's repository plus `version`. Set it to PIN
         BY DIGEST, which is the only way two syncs of an identical rendered tree cannot run
         different code — the grammar warns while it is unpinned.
+      '';
+    };
+
+    objectName = lib.mkOption {
+      type = lib.types.nullOr lib.types.str;
+      default = null;
+      description = ''
+        What the rendered objects are CALLED, when the live ones are called something other than
+        this declaration's key. Purely a cluster's history -- renaming an object in place is a
+        delete and a create, not an edit -- which is why it sits here and not in the catalogue.
+      '';
+    };
+
+    replicas = lib.mkOption {
+      type = lib.types.nullOr lib.types.ints.unsigned;
+      default = null;
+      description = ''
+        How many copies run. Null leaves it to the platform, which is the honest default: a number
+        here is a claim that this software tolerates being run more than once, and most of what
+        this family catalogues does not.
+
+        Refused outright on software the catalogue marks `singleWriter`, because two copies of
+        that is not a scaling decision, it is two processes writing one store.
       '';
     };
 
@@ -1272,6 +1458,9 @@ in
       ++ credentialAssertions
       ++ imageAssertions
       ++ idleAssertions
+      ++ replicaAssertions
+      ++ volumeNameAssertions
+      ++ authAssertions
       ++ nestingAssertions
       ++ identityAssertions
       ++ requiresAssertions
@@ -1280,6 +1469,6 @@ in
       ++ slotAssertions
       ++ extraAssertions workloads;
 
-    nixidy.warnings = builtinWarnings ++ nestingWarnings ++ extraWarnings workloads;
+    nixidy.warnings = builtinWarnings ++ nestingWarnings ++ idleWarnings ++ authWarnings ++ extraWarnings workloads;
   };
 }

@@ -24,7 +24,12 @@
 
       # A mount path as a bare string, which is what most catalogues here write. Kept in that
       # spelling deliberately: it is the only entry exercising it.
-      state.data = "/var/lib/alpha";
+      # A SHORTLIST, because a scratch directory under this software's store is discarded on
+      # exactly the restart the store exists to survive. Five backings exist; this one accepts two.
+      state.data = {
+        mountPath = "/var/lib/alpha";
+        backings = [ "claim" "hostPath" ];
+      };
 
       # A SECOND directory, in the other spelling, carrying the one fact only a catalogue can state
       # about a tree: that it GROWS. An archive, an upload tree, a media library -- something whose
@@ -65,7 +70,22 @@
       # IT HAS WORK THAT HAPPENS WHILE NOBODY IS LOOKING, so idling it to zero does not make that
       # work late -- it makes it not happen. The factory refuses the combination rather than
       # warning about it.
-      idleSafe = false;
+      # STATED AT A VOLUME, AND IN ITS OWN WORDS. A bare `false` refuses; a catalogue that has
+      # measured its own software and knows the loss is survivable says so, and gets to explain
+      # why in a sentence somebody can act on.
+      idleSafe = {
+        safe = false;
+        severity = "refuse";
+        because = "The reminder it sends is the one nobody is waiting for.";
+      };
+
+      # WHAT ITS ENTRYPOINT NEEDS SAYING. Leaving it out starts this image with no subcommand,
+      # which prints help and exits 0 -- a container that "ran".
+      command = [ "alpha" "serve" ];
+
+      # ONE PROCESS MAY HAVE THIS OPEN. Not a scaling preference: a second copy corrupts the
+      # store rather than sharing the load.
+      singleWriter = true;
 
       hardening = {
         capabilities = "none";
@@ -106,6 +126,18 @@
       # WHICH VARIABLE this software reads its own uid from. The uid itself is never here: a role
       # is resolved against the consumer's identity registry, which is the only thing that knows
       # what a role means on a given fleet.
+      # IT PUTS WORK ON A GRAPHICS DEVICE. A catalogue fact of exactly the same kind as idle
+      # safety, and the grammar asks the site what its own device is called.
+      gpu = true;
+
+      # AND IT ASKS NOBODY FOR ANYTHING. Warned rather than refused here, because this one is
+      # reached only from inside and the catalogue says so in its own words.
+      authenticates = {
+        authenticates = false;
+        severity = "warn";
+        because = "It is a rendering worker, reached by the queue rather than by a person.";
+      };
+
       identityEnv = {
         user = "BETA_UID";
         group = "BETA_GID";
@@ -120,6 +152,33 @@
     # no declaration can fix. It exists so the refusal has something to fire on: assertions only
     # run for declared workloads, so an entry nobody declares leaves the example green while the
     # eval check can declare it in one case and watch the guard bite.
+    # A SINGLE WRITER THAT KEEPS NOTHING THE GRAMMAR CAN SEE. This entry exists because the other
+    # single writer in this file also has a node path, and durable state forces Recreate on its
+    # own -- so an assertion about `singleWriter` made against THAT one passes whether the term is
+    # forwarded or not. That is not a hypothetical: one repository in this family declared
+    # `singleWriter` on a workload with no state, the translator dropped it, and the only reason
+    # nothing had broken was that its sibling happened to have a directory.
+    #
+    # Its store is somewhere the grammar cannot see -- a remote lock, a warm cache on a network
+    # mount -- which is exactly when the catalogue has to say so, because nothing can infer it.
+    epsilon = {
+      image = "registry.example.com/example-org/epsilon";
+      ports.http = 5500;
+      primaryPort = "http";
+      state = { };
+      singleWriter = true;
+    };
+
+    # SOFTWARE NOBODY PUBLISHES A CONTAINER FOR. Upstream ships a build recipe; whoever runs it
+    # brings their own image. Declared by nothing in the example values -- it exists so the
+    # refusal has something to fire on.
+    delta = {
+      image = null;
+      ports.http = 6000;
+      primaryPort = "http";
+      state = { };
+    };
+
     gamma = {
       image = "registry.example.com/example-org/gamma";
       ports.http = 7000;

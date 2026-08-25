@@ -37,7 +37,19 @@ pkgs.runCommand "nixk3s-consumer-render"
   y() { yq -r "$1" "$2"; }
 
   one="$manifests/one"
-  two="$manifests/two"
+  two="$manifests/example-beta-renamed"
+
+  # `two` renames itself to what a live cluster already calls it. The rename reaches EVERYTHING --
+  # the Application, its directory and every object in it -- which is the only version of a rename
+  # that is any use for adoption: an Application still named for the declaration key would leave
+  # the delivery tool tracking one name while the cluster holds another.
+  echo "== a rename reaches the whole workload, not just its objects =="
+  check "the Deployment"  "Deployment-example-beta-renamed.yaml" "$(cd "$two" && ls Deployment-*.yaml)"
+  check "the Service"     "Service-example-beta-renamed.yaml"    "$(cd "$two" && ls Service-*.yaml)"
+  check "the Application" "Application-example-beta-renamed.yaml" \
+    "$(cd "$manifests/apps" && ls Application-example-beta*.yaml)"
+  check "and the key it was declared under renders nothing of its own" "" \
+    "$(ls "$manifests" | grep -x two || true)"
 
   echo "== both spellings of a port reach a Service, and the attrset keeps what only it can say =="
   check "integer port -> containerPort" "8080" \
@@ -45,9 +57,9 @@ pkgs.runCommand "nixk3s-consumer-render"
   check "integer port -> service port" "8080" \
     "$(y '.spec.ports[0].port' "$one/Service-one.yaml")"
   check "attrset port -> containerPort" "9000" \
-    "$(y '.spec.template.spec.containers[0].ports[0].containerPort' "$two/Deployment-two.yaml")"
+    "$(y '.spec.template.spec.containers[0].ports[0].containerPort' "$two/Deployment-example-beta-renamed.yaml")"
   check "attrset port keeps protocol" "TCP" \
-    "$(y '.spec.template.spec.containers[0].ports[0].protocol' "$two/Deployment-two.yaml")"
+    "$(y '.spec.template.spec.containers[0].ports[0].protocol' "$two/Deployment-example-beta-renamed.yaml")"
 
   echo "== both spellings of a directory reach a volumeMount =="
   check "string state -> mountPath" "/var/lib/alpha" \
@@ -55,11 +67,11 @@ pkgs.runCommand "nixk3s-consumer-render"
   check "the second, attrset-spelled directory too" "/var/lib/alpha/archive" \
     "$(y '.spec.template.spec.containers[0].volumeMounts[] |  select(.name=="data-archive") | .mountPath' "$one/Deployment-one.yaml")"
   check "attrset state -> mountPath" "/srv/reference" \
-    "$(y '.spec.template.spec.containers[0].volumeMounts[] | select(.name=="reference") | .mountPath' "$two/Deployment-two.yaml")"
+    "$(y '.spec.template.spec.containers[0].volumeMounts[] | select(.name=="reference") | .mountPath' "$two/Deployment-example-beta-renamed.yaml")"
 
   echo "== a readOnly the CATALOGUE states reaches the mount with no declaration saying so =="
   check "catalogue readOnly wins" "true" \
-    "$(y '.spec.template.spec.containers[0].volumeMounts[] | select(.name=="reference") | .readOnly' "$two/Deployment-two.yaml")"
+    "$(y '.spec.template.spec.containers[0].volumeMounts[] | select(.name=="reference") | .readOnly' "$two/Deployment-example-beta-renamed.yaml")"
 
   echo "== the backing the declaration chose is the one that renders =="
   check "node path backing" "/example/state/one" \
@@ -71,15 +83,15 @@ pkgs.runCommand "nixk3s-consumer-render"
   check "no fsGroup from a curated tree" "null" \
     "$(y '.spec.template.spec.securityContext.fsGroup' "$one/Deployment-one.yaml")"
   check "claim backing" "example-reference" \
-    "$(y '.spec.template.spec.volumes[] | select(.name=="reference") | .persistentVolumeClaim.claimName' "$two/Deployment-two.yaml")"
+    "$(y '.spec.template.spec.volumes[] | select(.name=="reference") | .persistentVolumeClaim.claimName' "$two/Deployment-example-beta-renamed.yaml")"
 
   echo "== both spellings of a probe produce the same object =="
   check "probes-attrset readiness path" "/healthz" \
     "$(y '.spec.template.spec.containers[0].readinessProbe.httpGet.path' "$one/Deployment-one.yaml")"
   check "per-kind readiness path" "/ready" \
-    "$(y '.spec.template.spec.containers[0].readinessProbe.httpGet.path' "$two/Deployment-two.yaml")"
+    "$(y '.spec.template.spec.containers[0].readinessProbe.httpGet.path' "$two/Deployment-example-beta-renamed.yaml")"
   check "per-kind liveness path" "/alive" \
-    "$(y '.spec.template.spec.containers[0].livenessProbe.httpGet.path' "$two/Deployment-two.yaml")"
+    "$(y '.spec.template.spec.containers[0].livenessProbe.httpGet.path' "$two/Deployment-example-beta-renamed.yaml")"
 
   echo "== a budget overrides ONE number; the catalogue keeps the rest =="
   check "declared failureThreshold" "30" \
@@ -128,24 +140,24 @@ pkgs.runCommand "nixk3s-consumer-render"
 
   echo "== a catalogue that states NO hardening renders none, rather than throwing =="
   check "no container securityContext" "null" \
-    "$(y '.spec.template.spec.containers[0].securityContext' "$two/Deployment-two.yaml")"
+    "$(y '.spec.template.spec.containers[0].securityContext' "$two/Deployment-example-beta-renamed.yaml")"
 
   echo "== a catalogue that omits env, args and credentials still renders =="
   check "no args at all" "null" \
-    "$(y '.spec.template.spec.containers[0].args' "$two/Deployment-two.yaml")"
+    "$(y '.spec.template.spec.containers[0].args' "$two/Deployment-example-beta-renamed.yaml")"
   check "no credentials at all" "" \
-    "$(y '.spec.template.spec.containers[0].env[] | select(.valueFrom)' "$two/Deployment-two.yaml")"
+    "$(y '.spec.template.spec.containers[0].env[] | select(.valueFrom)' "$two/Deployment-example-beta-renamed.yaml")"
 
   echo "== an identity is a ROLE here and NUMBERS in the manifest, and never a name =="
   # This catalogue names variables the software reads its own ids from, so the grammar delivers the
   # identity THAT way rather than as a pod securityContext -- the two are alternatives, and which
   # one applies is the catalogue's fact. Both halves are asserted, including the absence.
   check "uid reaches the variable the catalogue named" "3001" \
-    "$(y '.spec.template.spec.containers[0].env[] | select(.name=="BETA_UID") | .value' "$two/Deployment-two.yaml")"
+    "$(y '.spec.template.spec.containers[0].env[] | select(.name=="BETA_UID") | .value' "$two/Deployment-example-beta-renamed.yaml")"
   check "gid reaches the variable the catalogue named" "3001" \
-    "$(y '.spec.template.spec.containers[0].env[] | select(.name=="BETA_GID") | .value' "$two/Deployment-two.yaml")"
+    "$(y '.spec.template.spec.containers[0].env[] | select(.name=="BETA_GID") | .value' "$two/Deployment-example-beta-renamed.yaml")"
   check "an env identity renders no runAsUser" "null" \
-    "$(y '.spec.template.spec.securityContext.runAsUser' "$two/Deployment-two.yaml")"
+    "$(y '.spec.template.spec.securityContext.runAsUser' "$two/Deployment-example-beta-renamed.yaml")"
   check "no role NAME anywhere in the rendered tree" "0" \
     "$(grep -rl "example-role" "$manifests" | wc -l)"
 
@@ -160,6 +172,32 @@ pkgs.runCommand "nixk3s-consumer-render"
   echo "== the image is the catalogue repository plus the declaration's version =="
   check "image built from version" "registry.example.com/example-org/alpha:1.4.2" \
     "$(y '.spec.template.spec.containers[0].image' "$one/Deployment-one.yaml")"
+
+  echo "== the catalogue's own container terms reach the container =="
+  check "command" "alpha" \
+    "$(y '.spec.template.spec.containers[0].command[0]' "$one/Deployment-one.yaml")"
+  check "and its subcommand" "serve" \
+    "$(y '.spec.template.spec.containers[0].command[1]' "$one/Deployment-one.yaml")"
+
+  echo "== a single writer is never rolled, and a device is requested by name =="
+  # `alpha` is catalogued as a single writer, so its Deployment must stop the old pod before
+  # starting the new one -- a rolling update here is two processes on one store.
+  # Asserted on the workload that keeps NOTHING, deliberately. `one` also has a node path, and
+  # durable state forces Recreate by itself -- so the same assertion made there would pass whether
+  # the catalogue's word was forwarded or not.
+  check "single writer, no state" "Recreate" \
+    "$(y '.spec.strategy.type' "$manifests/lock/Deployment-lock.yaml")"
+  check "device requested" "1" \
+    "$(y '.spec.template.spec.containers[0].resources.limits."example.com/gpu"' "$two/Deployment-example-beta-renamed.yaml")"
+  check "and only by the workload that claims one" "null" \
+    "$(y '.spec.template.spec.containers[0].resources.limits."example.com/gpu"' "$one/Deployment-one.yaml")"
+
+  echo "== a workload the catalogue does not call a single writer may run more than once =="
+  check "replicas" "2" "$(y '.spec.replicas' "$two/Deployment-example-beta-renamed.yaml")"
+  # Saying nothing leaves the grammar's own single copy, which is what makes `null` the honest
+  # default here: the factory adds a number only when somebody decided one.
+  check "and saying nothing leaves the grammar's own single copy" "1" \
+    "$(y '.spec.replicas' "$one/Deployment-one.yaml")"
 
   echo "== with origin unset, nothing grew an address =="
   check "no pinned clusterIP" "null" \
