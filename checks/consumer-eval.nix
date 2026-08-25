@@ -82,7 +82,15 @@ let
 
     "asking the kubelet to own a directory the catalogue says GROWS is refused" =
       failsWith "GROWS"
-        (with' { nixconsumer.applications.one.state.archive.ownership = "kubelet"; });
+        (with' { nixconsumer.applications.one.state.data-archive.ownership = "kubelet"; });
+
+    # The example names its nested pair so the outer sorts first. Forcing the inner one to sort
+    # earlier is the mistake this guard exists for, and it is invisible at runtime: the outer mount
+    # is laid over the inner, the data is still on the disk, and the workload comes up healthy
+    # against a directory it can no longer see.
+    "a nested mount whose name sorts before its parent is refused" =
+      failsWith "sort the wrong way round"
+        (with' { nixconsumer.applications.one.state.data-archive.volumeName = "aaa-archive"; });
 
     "the same ownership on a directory that does not grow renders" =
       renders (with' { nixconsumer.applications.two.state.reference.ownership = "kubelet"; });
@@ -125,6 +133,10 @@ let
     "an endpoint for something the software does not read is refused" =
       failsWith "does not read"
         (with' { nixconsumer.applications.one.requires.nothing.endpoint = "http://example-nothing"; });
+
+    "an endpoint that does not speak the protocol the catalogue names is refused" =
+      failsWith "does not speak the protocol"
+        (with' { nixconsumer.applications.one.requires.index.endpoint = lib.mkForce "redis://example-index:6379"; });
 
     "a literal address instead of a service name is refused" =
       failsWith "literal ADDRESS"

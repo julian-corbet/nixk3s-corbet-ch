@@ -30,7 +30,7 @@
       # about a tree: that it GROWS. An archive, an upload tree, a media library -- something whose
       # whole purpose is to keep getting bigger, which is what makes a recursive chown on every pod
       # start the wrong idea rather than merely a slow one.
-      state.archive = { mountPath = "/var/lib/alpha/archive"; grows = true; };
+      state.data-archive = { mountPath = "/var/lib/alpha/archive"; grows = true; };
 
       env.ALPHA_MODE = "catalogued";
       args = [ "--serve" ];
@@ -51,7 +51,13 @@
       };
 
       # WHICH VARIABLE carries the endpoint of a service this one needs. Never the endpoint.
-      requires.index.env = "ALPHA_INDEX_URL";
+      requires.index = {
+        env = "ALPHA_INDEX_URL";
+        # WHAT IS SPOKEN on the other end. A queue reached over http and an index reached over
+        # redis are both plausible strings and neither works; which one belongs here is a property
+        # of the software, not of one cluster's routing.
+        scheme = "http";
+      };
 
       # WHICH VARIABLE this software reads its own public URL from, for the links it generates.
       selfUrlEnv = "ALPHA_PUBLIC_URL";

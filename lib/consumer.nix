@@ -428,8 +428,13 @@ let
         declared = lib.attrNames w.requires;
         missing = lib.subtractLists declared catalogued;
         stray = lib.subtractLists catalogued declared;
-        literals = lib.filter (k: isAddress (w.requires.${k}).endpoint)
-          (lib.filter (k: lib.elem k catalogued) declared);
+        shared = lib.filter (k: lib.elem k catalogued) declared;
+        literals = lib.filter (k: isAddress (w.requires.${k}).endpoint) shared;
+        wrongScheme = lib.filter
+          (k:
+            let want = (entry.requires.${k}).scheme or null; in
+            want != null && !lib.hasPrefix "${want}://" (w.requires.${k}).endpoint)
+          shared;
       in
       [
         {
@@ -451,6 +456,18 @@ let
             + "not a declaration.";
         }
         {
+          # WHAT IS SPOKEN on the other end, when the catalogue knows. A queue reached over `http://`
+          # and an index reached over `redis://` are both plausible strings and neither works, and
+          # the failure arrives at the first request rather than at the render.
+          assertion = wrongScheme == [ ];
+          message =
+            "${namespace}: workload `${name}` is given an endpoint for "
+            + lib.concatMapStringsSep ", " (k: "`${k}`") wrongScheme
+            + " that does not speak the protocol `${w.${selector}}` expects there. The catalogue "
+            + "says which scheme belongs on each of these, because that is a property of the "
+            + "software rather than of one cluster's routing.";
+        }
+        {
           assertion = literals == [ ];
           message =
             "${namespace}: workload `${name}` is given a literal ADDRESS for "
@@ -459,6 +476,47 @@ let
             + "goes on holding a number nothing answers on and fails silently when it changes.";
         }
       ])
+    workloads;
+
+  # NESTED MOUNTS ARE ORDERED, AND THE ORDER IS THE CATALOGUE'S KEY NAMES.
+  #
+  # A workload that keeps one directory inside another -- an index at /data and the archive itself
+  # at /data/archive -- gets both as separate mounts, and they are rendered in attribute order. If
+  # the INNER name sorts first it is written first and the outer one is laid on top of it: the
+  # archive is still on the disk and the application can no longer see it. Nothing fails, nothing
+  # logs, and the workload comes up looking healthy against an empty directory.
+  #
+  # It is checked here rather than in each catalogue because it is a property of how mounts render,
+  # which no catalogue can see, and the fix is always the same -- rename the keys so the outer one
+  # sorts first.
+  nestingAssertions = lib.concatMap
+    (x:
+      let
+        inherit (x) name w entry;
+        keys = lib.attrNames w.state;
+        pathOf = k: mountPathOf entry.state.${k};
+        pairs = lib.concatMap
+          (outer: lib.concatMap
+            (inner:
+              lib.optional
+                (outer != inner
+                  && lib.hasPrefix "${pathOf outer}/" (pathOf inner)
+                  && volumeNameOf w inner < volumeNameOf w outer)
+                { inherit outer inner; })
+            keys)
+          keys;
+      in
+      map
+        (c: {
+          assertion = false;
+          message =
+            "${namespace}: workload `${name}` mounts `${c.inner}` (${pathOf c.inner}) inside "
+            + "`${c.outer}` (${pathOf c.outer}), and the names sort the wrong way round. Mounts are "
+            + "rendered in attribute order, so `${c.inner}` would be written first and `${c.outer}` "
+            + "laid on top of it -- the data is still on the disk and the workload can no longer "
+            + "see it. Rename the keys so the outer one sorts first.";
+        })
+        pairs)
     workloads;
 
   # A public URL nothing reads is not harmless -- it is somebody believing they configured a link
@@ -1050,6 +1108,7 @@ in
       ++ probeAssertions
       ++ credentialAssertions
       ++ idleAssertions
+      ++ nestingAssertions
       ++ requiresAssertions
       ++ publicUrlAssertions
       ++ anchorAssertions

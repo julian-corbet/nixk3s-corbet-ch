@@ -41,7 +41,7 @@
       };
       # The growing tree, on a path somebody curates outside the cluster. Its ownership is left at
       # `site-curated`, which is the answer the catalogue's `grows` makes the only legal one.
-      state.archive.hostPath = "/example/archive/one";
+      state.data-archive.hostPath = "/example/archive/one";
 
       # The budget half. The catalogue's own periodSeconds and timeoutSeconds survive; only the
       # number stated here changes, which is what "unstated is the catalogue's" has to mean.

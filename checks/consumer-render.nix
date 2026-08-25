@@ -53,7 +53,7 @@ pkgs.runCommand "nixk3s-consumer-render"
   check "string state -> mountPath" "/var/lib/alpha" \
     "$(y '.spec.template.spec.containers[0].volumeMounts[] | select(.name=="data") | .mountPath' "$one/Deployment-one.yaml")"
   check "the second, attrset-spelled directory too" "/var/lib/alpha/archive" \
-    "$(y '.spec.template.spec.containers[0].volumeMounts[] | select(.name=="archive") | .mountPath' "$one/Deployment-one.yaml")"
+    "$(y '.spec.template.spec.containers[0].volumeMounts[] |  select(.name=="data-archive") | .mountPath' "$one/Deployment-one.yaml")"
   check "attrset state -> mountPath" "/srv/reference" \
     "$(y '.spec.template.spec.containers[0].volumeMounts[] | select(.name=="reference") | .mountPath' "$two/Deployment-two.yaml")"
 
