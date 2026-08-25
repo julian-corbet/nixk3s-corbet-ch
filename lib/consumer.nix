@@ -110,6 +110,14 @@ let
   # says the live object calls it something else -- which only an adoption ever needs.
   volumeNameOf = w: key: if w.state.${key}.volumeName != null then w.state.${key}.volumeName else key;
 
+  # KEYS BOTH SIDES KNOW ABOUT. The guard that catches a directory only one side has is a state
+  # assertion; every use of the catalogue that indexes it BY A DECLARATION'S KEY must walk the
+  # intersection instead, or it throws a missing-attribute error while the assertion written to
+  # explain the mistake is still being collected -- and the author gets a crash where a sentence
+  # was waiting for them.
+  sharedStateKeys = entry: w:
+    lib.filter (k: (entry.state or { }) ? ${k}) (lib.attrNames w.state);
+
   stateOf = entry: w:
     lib.mapAttrs'
       (key: backing:
@@ -119,7 +127,7 @@ let
           inherit (backing) claim hostPath hostPathType configMap secret emptyDir ownership;
           readOnly = if ro != null then ro else backing.readOnly;
         })
-      w.state;
+      (lib.getAttrs (sharedStateKeys entry w) w.state);
 
   # The same split, for probes. The catalogue decides WHICH probes exist and WHAT THEY ASK FOR —
   # the endpoint, the port, and how long one answer may take, which is a property of the software
@@ -323,7 +331,7 @@ let
           # tree is the thing that keeps getting bigger.
           assertion = lib.all
             (key: !((entry.state.${key}.grows or false) && w.state.${key}.ownership == "kubelet"))
-            (lib.attrNames w.state);
+            (sharedStateKeys entry w);
           message =
             "${namespace}: workload `${name}` asks the kubelet to own a directory the catalogue says "
             + "GROWS. That means chowning it recursively on every single pod start, over a tree "
@@ -493,7 +501,7 @@ let
     (x:
       let
         inherit (x) name w entry;
-        keys = lib.attrNames w.state;
+        keys = sharedStateKeys entry w;
         pathOf = k: mountPathOf entry.state.${k};
         pairs = lib.concatMap
           (outer: lib.concatMap

@@ -67,6 +67,14 @@ let
       failsWith "must back every directory it writes"
         (with' { nixconsumer.applications.one.state = lib.mkForce { }; });
 
+    # The declaration-only direction, and the reason it needs its own case: every other guard
+    # indexes the catalogue by a declaration's key, so a key the catalogue has never heard of used
+    # to throw a missing-attribute error while the assertion explaining the mistake was still being
+    # collected. The author got a crash where a sentence was waiting for them.
+    "backing a directory the catalogue does not name gives a MESSAGE, not a crash" =
+      failsWith "must back every directory it writes"
+        (with' { nixconsumer.applications.one.state.not-a-directory.hostPath = "/example/nope"; });
+
     "a directory with no backing at all is refused" =
       failsWith "EXACTLY ONE of a claim"
         (with' { nixconsumer.applications.one.state.data = lib.mkForce { }; });
