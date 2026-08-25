@@ -142,6 +142,28 @@
           # environment is the example file, so any difference between the two
           # rendered trees is that boolean and nothing else — which is exactly
           # what the render check reads back, file by file.
+          # THE CONSUMER FACTORY, rendered against a catalogue built to be awkward.
+          #
+          # This is the one env in this file whose catalogue is not a real thing anybody runs, and
+          # that is the point. The factory tolerates two spellings of `ports`, two of `state` and
+          # two ways of naming probes, and reads five catalogue fields through defaults -- all so
+          # thirteen existing catalogues could move onto it without being rewritten to agree on
+          # punctuation. Every one of those tolerances is a claim about catalogues this repository
+          # has never seen, and no real catalogue exercises more than half of them. So the example
+          # writes each entry in the spelling the other one does not use, and omits from one every
+          # field the other states.
+          consumerEnv = nixidy.lib.mkEnv {
+            inherit pkgs;
+            modules = [
+              self.nixidyModules.apps
+              (self.lib.mkConsumerModule {
+                namespace = "nixconsumer";
+                catalogue = (import ./examples/consumer/catalogue.nix { }).entries;
+              })
+              ./examples/consumer/values.nix
+            ];
+          };
+
           cockpitFreshEnv = nixidy.lib.mkEnv {
             inherit pkgs;
             modules = [
@@ -227,6 +249,13 @@
             inherit pkgs lib;
             env = cockpitEnv;
             envFresh = cockpitFreshEnv;
+          };
+
+          # THE FACTORY'S OWN PROMISES, off the rendered bytes. Fourteen repositories' translators
+          # collapsed into one function, so a mistake here is a mistake in every catalogue at once.
+          consumer-render = import ./checks/consumer-render.nix {
+            inherit pkgs lib;
+            env = consumerEnv;
           };
 
           host-module-evaluates =
