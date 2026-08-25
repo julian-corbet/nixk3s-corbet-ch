@@ -100,7 +100,8 @@ let
   # A whole reference wins over a repository plus a tag, which is what pinning by digest looks
   # like. The catalogue never carries either: a version is a deployment's choice and a digest is
   # one deployment's proof of what it is running.
-  imageOf = entry: w: if w.image != null then w.image else "${entry.image}:${w.version}";
+  imageOf = entry: w:
+    if w.image != null then w.image else "${entry.image}:${w.version}";
 
   portsOf = entry: lib.mapAttrs (_: normalisePort) entry.ports;
 
@@ -416,6 +417,21 @@ let
             + "Secret for a variable the software already looks in; it cannot invent the variable.";
         }
       ])
+    workloads;
+
+  # ONE OF THE TWO WAYS OF SAYING WHAT RUNS, and exactly one. Neither is a default anybody could
+  # supply: a catalogue naming a version would be guessing at somebody else's cluster, and a
+  # workload with no reference at all is one nothing can start.
+  imageAssertions = lib.concatMap
+    (x:
+      let inherit (x) name w; in
+      [{
+        assertion = w.image != null || w.version != null;
+        message =
+          "${namespace}: workload `${name}` says neither which version it runs nor a whole image "
+          + "reference. One of them decides what starts, and there is no third place for that to "
+          + "come from.";
+      }])
     workloads;
 
   # IDLING IS A CORRECTNESS QUESTION, not a preference, which is why this refuses rather than
@@ -865,11 +881,16 @@ let
     };
 
     version = lib.mkOption {
-      type = lib.types.str;
+      type = lib.types.nullOr lib.types.str;
+      default = null;
       description = ''
-        Which version this workload runs, used as the image tag. REQUIRED and defaulted nowhere:
-        a catalogue that guessed a version would be guessing what is running in somebody else's
-        cluster, and a default here would be that guess wearing a value's clothes.
+        Which version this workload runs, used as the image tag alongside the catalogue's
+        repository.
+
+        THIS AND `image` ARE ALTERNATIVES rather than a pair: a whole reference already says what
+        runs, and a version beside one chooses nothing. Stating NEITHER is refused -- there would
+        be no way to know what to run, and defaulting it would be a guess about somebody else's
+        cluster wearing a value's clothes.
       '';
     };
 
@@ -1230,6 +1251,7 @@ in
       stateAssertions
       ++ probeAssertions
       ++ credentialAssertions
+      ++ imageAssertions
       ++ idleAssertions
       ++ nestingAssertions
       ++ identityAssertions

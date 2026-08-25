@@ -216,6 +216,16 @@ let
 
     # ── Things that are unwritable rather than refused ───────────────────────────────────────
     # The stronger kind of boundary: nobody has to remember them, because the option does not exist.
+    "saying neither a version nor a whole image reference is refused" =
+      failsWith "neither which version it runs"
+        (with' { nixconsumer.applications.one.version = lib.mkForce null; });
+
+    "a whole image reference alone is enough" =
+      renders (with' {
+        nixconsumer.applications.two.version = lib.mkForce null;
+        nixconsumer.applications.two.image = "registry.example.com/example-org/beta@sha256:0000000000000000000000000000000000000000000000000000000000000000";
+      });
+
     "a catalogue entry that does not exist cannot be named" =
       !renders (with' { nixconsumer.applications.one.app = "not-in-the-catalogue"; });
 
