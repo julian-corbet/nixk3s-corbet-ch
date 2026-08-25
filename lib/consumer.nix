@@ -171,8 +171,16 @@ let
       lib.optionalAttrs ((h.capabilities or null) == "none") { capabilitiesDrop = [ "ALL" ]; }
       // lib.optionalAttrs ((h.privilegeEscalation or null) == "never") { allowPrivilegeEscalation = false; }
       // lib.optionalAttrs ((h.seccomp or null) != null) { seccomp = h.seccomp; }
-      // lib.optionalAttrs ((h.rootFilesystem or null) != null) {
-        readOnlyRootFilesystem = h.rootFilesystem == "read-only";
+      # ONLY THE RESTRICTION RENDERS. `read-only` is an established fact about the software and
+      # becomes a field; `writable` and `unestablished` render nothing at all, for two different
+      # reasons that land in the same place. `unestablished` means nobody has run this with a
+      # read-only root and confirmed it works, and a class asserted without that is a guess wearing
+      # a restriction's clothes. `writable` is established -- but `false` is already the platform's
+      # default, so writing it out says nothing about the software and everything about what one
+      # live container happens to carry, which is a cluster's history and belongs in a typed merge
+      # where somebody types it on purpose.
+      // lib.optionalAttrs ((h.rootFilesystem or null) == "read-only") {
+        readOnlyRootFilesystem = true;
       }
       // lib.optionalAttrs ((h.runAsNonRoot or null) != null) { inherit (h) runAsNonRoot; }
     );
@@ -706,6 +714,17 @@ let
             "${namespace}: workload `${name}` is declared scale-to-zero with no wake front, so "
             + "nothing brings it back. At zero replicas that is not an idle workload, it is an "
             + "unreachable one.";
+        }
+        {
+          # A container that asks for nothing is SCHEDULED as though it were free, which is how a
+          # node ends up oversubscribed by workloads that each looked small. Nothing fills it in:
+          # a number nobody measured is worse than an honest absence, and this keeps the absence
+          # countable instead of invisible.
+          when = w.resources.cpuRequest == null && w.resources.memoryRequest == null;
+          message =
+            "${namespace}: workload `${name}` asks for no CPU or memory, so the scheduler places it "
+            + "as if it cost nothing. Nothing here fills that in -- a number nobody measured would "
+            + "be a guess the scheduler then treats as a measurement.";
         }
         {
           when = w.image != null;
