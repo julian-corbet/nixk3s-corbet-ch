@@ -96,9 +96,33 @@ let
     # earlier is the mistake this guard exists for, and it is invisible at runtime: the outer mount
     # is laid over the inner, the data is still on the disk, and the workload comes up healthy
     # against a directory it can no longer see.
-    "a nested mount whose name sorts before its parent is refused" =
-      failsWith "sort the wrong way round"
-        (with' { nixconsumer.applications.one.state.data-archive.volumeName = "aaa-archive"; });
+    # A CATALOGUE that keys a nested pair the wrong way round is a bug nobody's cluster can be
+    # relying on, so it is refused.
+    "a catalogue whose nested keys sort the wrong way round is refused" =
+      failsWith "CATALOGUE's names sort the wrong way"
+        (with' {
+          nixconsumer.applications.three = {
+            app = "gamma";
+            version = "1.0.0";
+            state.archive.hostPath = "/example/state/three-archive";
+            state.data.hostPath = "/example/state/three";
+          };
+        });
+
+    # The same collision caused by a RENAME only warns, because a rename records what the live
+    # object is already called -- refusing would make an existing cluster undeclarable, which is
+    # not the same service as catching a mistake.
+    "the same collision caused by a rename warns instead, and still renders" =
+      warnsWith "stops being visible"
+        (with' { nixconsumer.applications.one.state.data-archive.volumeName = "aaa-archive"; })
+      && renders (with' { nixconsumer.applications.one.state.data-archive.volumeName = "aaa-archive"; });
+
+    "two directories renamed onto one volume name is refused" =
+      failsWith "onto one volume name"
+        (with' {
+          nixconsumer.applications.one.state.data.volumeName = "same";
+          nixconsumer.applications.one.state.data-archive.volumeName = "same";
+        });
 
     "the same ownership on a directory that does not grow renders" =
       renders (with' { nixconsumer.applications.two.state.reference.ownership = "kubelet"; });

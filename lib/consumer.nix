@@ -326,6 +326,16 @@ let
             + "exactly the restart that state exists to survive.";
         }
         {
+          # A rename is per directory; two of them landing on one name is one volume where the
+          # declaration says two, and the second silently wins.
+          assertion =
+            let names = map (k: volumeNameOf w k) (lib.attrNames w.state); in
+            lib.length (lib.unique names) == lib.length names;
+          message =
+            "${namespace}: workload `${name}` renames two directories onto one volume name. One of "
+            + "them would simply not be mounted, and which one is an accident of attribute order.";
+        }
+        {
           # The catalogue's half of an ownership decision: a directory it says GROWS must never be
           # chowned recursively on every pod start, because that cost scales with the tree and the
           # tree is the thing that keeps getting bigger.
@@ -516,15 +526,83 @@ let
       in
       map
         (c: {
-          assertion = false;
+          # ONLY when the CATALOGUE's own key names sort wrong. That is a bug in the catalogue and
+          # nobody's cluster can be relying on it. A pair that sorts wrong only because a
+          # DECLARATION renamed a volume is a different situation entirely -- the live object
+          # already carries that name, so refusing would make it impossible to adopt a cluster's
+          # own history, and the render would be refusing something already running. That case
+          # warns; see below.
+          assertion = !(c.inner < c.outer);
           message =
             "${namespace}: workload `${name}` mounts `${c.inner}` (${pathOf c.inner}) inside "
-            + "`${c.outer}` (${pathOf c.outer}), and the names sort the wrong way round. Mounts are "
-            + "rendered in attribute order, so `${c.inner}` would be written first and `${c.outer}` "
-            + "laid on top of it -- the data is still on the disk and the workload can no longer "
-            + "see it. Rename the keys so the outer one sorts first.";
+            + "`${c.outer}` (${pathOf c.outer}), and the CATALOGUE's names sort the wrong way "
+            + "round. Mounts are rendered in attribute order, so `${c.inner}` would be written "
+            + "first and `${c.outer}` laid on top of it -- the data is still on the disk and the "
+            + "workload can no longer see it. Rename the keys so the outer one sorts first.";
         })
         pairs)
+    workloads;
+
+  # The same collision, caused by a rename rather than by the catalogue. It warns because a rename
+  # records what a live object is ALREADY called: refusing would make an existing cluster
+  # undeclarable, which is not the same service as catching a mistake.
+  nestingWarnings = lib.concatMap
+    (x:
+      let
+        inherit (x) name w entry;
+        keys = sharedStateKeys entry w;
+        pathOf = k: mountPathOf entry.state.${k};
+        renamed = lib.concatMap
+          (outer: lib.concatMap
+            (inner:
+              lib.optional
+                (outer != inner
+                  && lib.hasPrefix "${pathOf outer}/" (pathOf inner)
+                  && !(inner < outer)
+                  && volumeNameOf w inner < volumeNameOf w outer)
+                { inherit outer inner; })
+            keys)
+          keys;
+      in
+      map
+        (c: {
+          when = true;
+          message =
+            "${namespace}: workload `${name}` renames `${c.inner}` to "
+            + "`${volumeNameOf w c.inner}`, which now sorts before `${volumeNameOf w c.outer}` -- "
+            + "the volume covering it at ${pathOf c.outer}. Mounts render in that order, so the "
+            + "outer one is laid over the inner and its data stops being visible. The names are "
+            + "presumably what the live objects already carry, which is why this is not refused.";
+        })
+        renamed)
+    workloads;
+
+  # WHO IT RUNS AS, refused in both directions. An image that can only start as uid 0 and a
+  # declaration that names a role are each individually sensible and together are a contradiction:
+  # the role would be silently ignored, which is the worst outcome -- somebody believes they
+  # dropped privileges. And an image that reads its ids from the environment with no role to read
+  # gets no ids at all, so it runs as whatever the image's own USER is while the declaration looks
+  # like it decided something.
+  identityAssertions = lib.concatMap
+    (x:
+      let inherit (x) name w entry; in
+      [
+        {
+          assertion = !((entry.rootStart or false) && w.identity != null);
+          message =
+            "${namespace}: workload `${name}` names the identity `${toString w.identity}`, and "
+            + "`${w.${selector}}` can only START as uid 0 -- it drops privileges itself, after it "
+            + "has done the work that needs them. The role would be ignored rather than applied, "
+            + "which is worse than refusing it: somebody would believe this pod was unprivileged.";
+        }
+        {
+          assertion = (entry.identityEnv or null) == null || w.identity != null;
+          message =
+            "${namespace}: workload `${name}` runs software that reads its own user and group ids "
+            + "from its environment, and no identity is named for it to read. It would start as "
+            + "whatever the image's own USER is, while this declaration looks like it decided.";
+        }
+      ])
     workloads;
 
   # A public URL nothing reads is not harmless -- it is somebody believing they configured a link
@@ -538,6 +616,24 @@ let
           "${namespace}: workload `${name}` is given a public URL, and `${w.${selector}}` reads no "
           + "variable to carry one. Nothing would consume it, so nothing would go wrong visibly -- "
           + "which is the whole reason this is an error rather than an unused value.";
+      }
+      {
+        # The other direction, and the one that actually breaks things. Software that generates
+        # links to itself and has not been told what it is called generates wrong ones: a
+        # confirmation mail nobody can follow, a redirect to localhost.
+        assertion = (entry.selfUrlEnv or null) == null || w.publicUrl != null;
+        message =
+          "${namespace}: workload `${name}` generates links to itself and has not been told what "
+          + "it is called. It will generate them anyway, from whatever it can guess -- which is how "
+          + "a confirmation mail arrives pointing at a host nobody can reach.";
+      }
+      {
+        # A URL is a name. The same argument as `requires`, for the same reason.
+        assertion = w.publicUrl == null || !isAddress w.publicUrl;
+        message =
+          "${namespace}: workload `${name}` is told it lives at a literal ADDRESS. Every link it "
+          + "generates would carry that number, into mails and bookmarks that outlive the lease on "
+          + "it.";
       }])
     workloads;
 
@@ -586,6 +682,14 @@ let
             "${namespace}: workload `${name}` is declared scale-to-zero with no wake front, so "
             + "nothing brings it back. At zero replicas that is not an idle workload, it is an "
             + "unreachable one.";
+        }
+        {
+          when = w.image != null;
+          message =
+            "${namespace}: workload `${name}` carries a whole image reference, so the `version` "
+            + "beside it now chooses nothing -- the reference decides what runs. Keep them agreeing "
+            + "anyway: the version is what a reader looks at, and a stale one is a reader misled by "
+            + "a declaration that is technically correct.";
         }
         {
           when = w.slot != null && platform.origin == null;
@@ -1117,12 +1221,13 @@ in
       ++ credentialAssertions
       ++ idleAssertions
       ++ nestingAssertions
+      ++ identityAssertions
       ++ requiresAssertions
       ++ publicUrlAssertions
       ++ anchorAssertions
       ++ slotAssertions
       ++ extraAssertions workloads;
 
-    nixidy.warnings = builtinWarnings ++ extraWarnings workloads;
+    nixidy.warnings = builtinWarnings ++ nestingWarnings ++ extraWarnings workloads;
   };
 }

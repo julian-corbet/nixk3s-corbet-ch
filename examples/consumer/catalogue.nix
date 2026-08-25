@@ -114,5 +114,23 @@
       # NO `env`, NO `args`, NO `credentials`, NO `hardening`. Every one of those is read through a
       # default in the factory, and a default nothing exercises is a default nobody has run.
     };
+
+    # A THIRD ENTRY, WRONG ON PURPOSE, and declared by nothing in the example values. Its nested
+    # directories are keyed so the inner one sorts FIRST, which is a bug a catalogue can make and
+    # no declaration can fix. It exists so the refusal has something to fire on: assertions only
+    # run for declared workloads, so an entry nobody declares leaves the example green while the
+    # eval check can declare it in one case and watch the guard bite.
+    gamma = {
+      image = "registry.example.com/example-org/gamma";
+      ports.http = 7000;
+      primaryPort = "http";
+
+      # `archive` sorts before `data`, and lives inside it. Rendered in that order the archive is
+      # written first and `data` is laid on top of it.
+      state = {
+        archive = { mountPath = "/var/lib/gamma/archive"; };
+        data = { mountPath = "/var/lib/gamma"; };
+      };
+    };
   };
 }
