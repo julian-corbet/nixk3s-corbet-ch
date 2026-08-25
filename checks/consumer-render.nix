@@ -94,6 +94,14 @@ pkgs.runCommand "nixk3s-consumer-render"
   check "credential carries no inline value" "null" \
     "$(y '.spec.template.spec.containers[0].env[] | select(.name=="ALPHA_TOKEN") | .value' "$one/Deployment-one.yaml")"
 
+  echo "== a second credential comes from a DIFFERENT Secret, grouped per Secret =="
+  check "per-variable secret override" "example-shared-mail" \
+    "$(y '.spec.template.spec.containers[0].env[] | select(.name=="ALPHA_SMTP_PASSWORD") | .valueFrom.secretKeyRef.name' "$one/Deployment-one.yaml")"
+  check "its key defaults to the variable name" "ALPHA_SMTP_PASSWORD" \
+    "$(y '.spec.template.spec.containers[0].env[] | select(.name=="ALPHA_SMTP_PASSWORD") | .valueFrom.secretKeyRef.key' "$one/Deployment-one.yaml")"
+  check "the default Secret still delivers the other" "example-one-credentials" \
+    "$(y '.spec.template.spec.containers[0].env[] | select(.name=="ALPHA_TOKEN") | .valueFrom.secretKeyRef.name' "$one/Deployment-one.yaml")"
+
   echo "== a declaration's env wins over the catalogue's, and args append =="
   check "env merged over catalogue" "declared" \
     "$(y '.spec.template.spec.containers[0].env[] | select(.name=="ALPHA_MODE") | .value' "$one/Deployment-one.yaml")"

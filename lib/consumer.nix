@@ -178,14 +178,25 @@ let
   #
   # Nothing here can carry a secret's CONTENT, which is what makes a declaration written against
   # this module safe to publish.
+  # ONE Secret for every credential variable is the common case and the default. It is not the only
+  # one: a workload can read one credential from a Secret somebody else owns and the rest from its
+  # own, and a repository that could not say so would have to fork this option to say it. So a
+  # per-variable override sits beside the default, the variables are GROUPED by whichever Secret
+  # ends up delivering them, and the single-Secret case falls out as the group of size one.
+  secretFor = w: v: w.credentials.secrets.${v} or w.credentials.secret;
+  keyFor = w: v: w.credentials.keys.${v} or v;
+
   secretsOf = entry: w:
-    lib.optionalAttrs (w.credentials.secret != null) {
-      ${w.credentials.secret} = {
-        secret = w.credentials.secret;
-        env = lib.listToAttrs
-          (map (v: lib.nameValuePair v (w.credentials.keys.${v} or v)) (entry.credentials or [ ]));
-      };
-    };
+    let
+      vars = entry.credentials or [ ];
+      covered = lib.filter (v: secretFor w v != null) vars;
+    in
+    lib.mapAttrs
+      (secretName: vs: {
+        secret = secretName;
+        env = lib.listToAttrs (map (v: lib.nameValuePair v (keyFor w v)) vs);
+      })
+      (lib.groupBy (secretFor w) covered);
 
   # Handed to the band model only when the consumer says it is part of the render: `origin` and
   # `slot` are ITS terms, and defining them into a render that does not declare them is an eval
@@ -279,20 +290,26 @@ let
     (x:
       let
         inherit (x) name w entry;
-        reads = (entry.credentials or [ ]) != [ ];
-        named = w.credentials.secret != null;
-        stray = lib.subtractLists (entry.credentials or [ ]) (lib.attrNames w.credentials.keys);
+        vars = entry.credentials or [ ];
+        reads = vars != [ ];
+        named = w.credentials.secret != null || w.credentials.secrets != { };
+        uncovered = lib.filter (v: secretFor w v == null) vars;
+        stray = lib.subtractLists vars
+          (lib.unique (lib.attrNames w.credentials.keys ++ lib.attrNames w.credentials.secrets));
       in
       [
         {
-          assertion = reads == named;
+          assertion = if reads then uncovered == [ ] else !named;
           message =
             if reads
             then
-              "${namespace}: workload `${name}` reads credentials from "
-              + lib.concatMapStringsSep ", " (v: "`${v}`") entry.credentials
-              + " and names no Secret to deliver them. This repository cannot carry their content, "
-              + "so the Secret's NAME is the one half a declaration owes."
+              "${namespace}: workload `${name}` reads "
+              + lib.concatMapStringsSep ", " (v: "`${v}`") uncovered
+              + " from its environment and names no Secret to deliver "
+              + (if lib.length uncovered == 1 then "it" else "them")
+              + ". This repository cannot carry their content, so the Secret's NAME is the one half "
+              + "a declaration owes -- as `credentials.secret` for all of them, or "
+              + "`credentials.secrets.<VARIABLE>` for one that comes from somewhere else."
             else
               "${namespace}: workload `${name}` names a Secret, and `${w.${selector}}` reads no "
               + "credential from its environment. A reference nothing consumes is a typo, not a "
@@ -672,6 +689,20 @@ let
           Per-variable overrides of the KEY inside the Secret, as `<VARIABLE> = "<key>"`. Defaults
           to the variable's own name. It renames the key for a variable the software already reads;
           it cannot invent the variable, and naming one the catalogue does not list is an error.
+        '';
+      };
+      secrets = lib.mkOption {
+        type = lib.types.attrsOf lib.types.str;
+        default = { };
+        example = lib.literalExpression ''{ SMTP_PASSWORD = "shared-mail-credentials"; }'';
+        description = ''
+          Per-variable overrides of WHICH SECRET delivers a credential, as
+          `<VARIABLE> = "<secret name>"`. Everything unlisted comes from `secret`.
+
+          This is not a convenience. A workload that reads one credential from a Secret another
+          team owns and the rest from its own is a real arrangement, and a vocabulary that could
+          only name one Secret would force the whole set into it -- which is how a Secret grows
+          keys nobody meant to put there.
         '';
       };
     };

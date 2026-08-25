@@ -42,6 +42,9 @@
       credentials = {
         secret = "example-one-credentials";
         keys.ALPHA_TOKEN = "token";
+        # The other half of the same variable: this one is NOT in this workload's own Secret, and
+        # forcing it in there would mean copying somebody else's credential to a second place.
+        secrets.ALPHA_SMTP_PASSWORD = "example-shared-mail";
       };
 
       env.ALPHA_MODE = "declared"; # merged OVER the catalogue's, so the render shows this one

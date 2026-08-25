@@ -28,8 +28,10 @@
       env.ALPHA_MODE = "catalogued";
       args = [ "--serve" ];
 
-      # WHICH VARIABLES carry credentials. Never which Secret, and never a value.
-      credentials = [ "ALPHA_TOKEN" ];
+      # WHICH VARIABLES carry credentials. Never which Secret, and never a value. Two of them, and
+      # the second exists to be delivered from somewhere else: a catalogue cannot know that one of
+      # these comes from a Secret another workload owns, so it says only that both are credentials.
+      credentials = [ "ALPHA_TOKEN" "ALPHA_SMTP_PASSWORD" ];
 
       # The `probes` attrset spelling: one key per probe, the shape underneath.
       probes = {
