@@ -60,8 +60,22 @@ let
   # `ports.http = 8080` is exactly as true as `ports.http = { number = 8080; }`.
   normalisePort = p: if lib.isInt p then { number = p; } else p;
 
-  mountPathOf = s: if lib.isString s then s else s.mountPath;
-  entryReadOnly = s: if lib.isString s then null else (s.readOnly or null);
+  # ONE VOLUME, SEVERAL PLACES. Real software mounts one directory at four to six paths -- a
+  # config subdirectory, a data subdirectory, a log subdirectory, each a `subPath` of the same
+  # volume. A catalogue may therefore write one mount path or a list of them, and the shorthand is
+  # the list of length one.
+  mountsOfEntry = e:
+    if lib.isString e then [ { mountPath = e; } ]
+    else if (e.mounts or [ ]) != [ ] then e.mounts
+    else [ { mountPath = e.mountPath; } ];
+
+  # ORDER IS SEMANTIC and is preserved: the first mount takes the volume's own name and the rest
+  # take ordinals, so the attribute sort reproduces exactly what the catalogue wrote. A factory
+  # that reordered, deduped or re-keyed this list would move mount zero.
+  pathsOfEntry = e: map (m: m.mountPath) (mountsOfEntry e);
+
+  mountPathOf = e: (lib.head (mountsOfEntry e)).mountPath;
+  entryReadOnly = e: if lib.isString e then null else (e.readOnly or null);
 
   # Probes arrive two ways: a `probes` attrset keyed by kind, or one field per kind. Same fact.
   probeShapesOf = entry:
@@ -150,11 +164,23 @@ let
     lib.mapAttrs'
       (key: backing:
         let ro = entryReadOnly entry.state.${key}; in
-        lib.nameValuePair (volumeNameOf w key) {
-          mountPath = mountPathOf entry.state.${key};
-          inherit (backing) claim hostPath hostPathType configMap secret emptyDir ownership;
-          readOnly = if ro != null then ro else backing.readOnly;
-        })
+        let
+          ms = mountsOfEntry entry.state.${key};
+          ro' = if ro != null then ro else backing.readOnly;
+        in
+        lib.nameValuePair (volumeNameOf w key) (
+          {
+            inherit (backing) claim hostPath hostPathType configMap secret emptyDir ownership;
+          }
+          # `mountPath` and `mounts` are alternatives in the grammar, not a pair.
+          // (if lib.length ms == 1
+          then { mountPath = (lib.head ms).mountPath; readOnly = ro'; }
+          else {
+            mounts = map
+              (m: { inherit (m) mountPath; subPath = m.subPath or null; readOnly = m.readOnly or ro'; })
+              ms;
+          })
+        ))
       (lib.getAttrs (sharedStateKeys entry w) w.state);
 
   # The same split, for probes. The catalogue decides WHICH probes exist and WHAT THEY ASK FOR —
@@ -214,10 +240,7 @@ let
 
   # Four named scalars in, two maps out, nulls dropped. A field nobody set renders no key, which
   # is what lets a declaration carry exactly the subset its live object already has.
-  resourcesOf = w: {
-    requests = dropNulls { cpu = w.resources.cpuRequest; memory = w.resources.memoryRequest; };
-    limits = dropNulls { cpu = w.resources.cpuLimit; memory = w.resources.memoryLimit; };
-  };
+  resourcesOf = w: resourcesFrom w.resources;
 
   # WHICH VARIABLES carry credentials is the catalogue's; WHICH SECRET delivers them, and under
   # which keys, is the declaration's. Named keys rather than a wholesale `envFrom`: every variable
@@ -245,6 +268,95 @@ let
         env = lib.listToAttrs (map (v: lib.nameValuePair v (keyFor w v)) vs);
       })
       (lib.groupBy (secretFor w) covered);
+
+  # ── Other containers in the pod ──────────────────────────────────────────────────────────────
+  #
+  # A workload is not always one process. Two shapes exist and they are not interchangeable:
+  #
+  #   init        containers that run TO COMPLETION, IN ORDER, before the app's own starts.
+  #               A list, because the order is the semantics -- an attrset would silently
+  #               alphabetise any sequence that is not already alphabetical.
+  #   companions  containers that run ALONGSIDE for the pod's life. An attrset, because their
+  #               order is not a fact about anything.
+  #
+  # Both are CATALOGUE knowledge: which processes this software is, what each one runs, which of
+  # the app's own directories each one sees. What a declaration owns is what it owns everywhere
+  # else -- which build runs, and what it costs on this hardware.
+
+  # THREE WAYS A CONTAINER GETS AN IMAGE, and the middle one is the common case people forget: a
+  # process that ships inside the application's own installation has no image of its own.
+  #   catalogue says null           -> the app's own image, and a declaration may not override it
+  #   catalogue names a repository  -> the declaration MUST supply a whole reference
+  # The fallback is deliberately the bare untagged repository: a total value, so the assertion
+  # below has something to speak about, and unusable enough that nothing quietly runs on it.
+  containerImageOf = entry: w: given: c:
+    if (c.image or null) == null then imageOf entry w
+    else if given != null then given
+    else c.image;
+
+  # Mounts are keyed by the CATALOGUE's name for a directory and must land on the volume this
+  # DEPLOYMENT calls it. That coupling is easy to miss and fails loudly but late: a companion
+  # mounting a volume the app no longer declares is refused by the grammar, not here.
+  remapMounts = w: ms:
+    lib.mapAttrs' (k: v: lib.nameValuePair (if w.state ? ${k} then volumeNameOf w k else k) v) ms;
+
+  containerSecurityOf = entry: w: c:
+    let h = c.hardening or null; in
+    lib.optionalAttrs (w.harden && h != null) (
+      lib.optionalAttrs ((h.capabilities or null) == "none") { capabilitiesDrop = [ "ALL" ]; }
+      // lib.optionalAttrs ((h.privilegeEscalation or null) == "never") { allowPrivilegeEscalation = false; }
+      // lib.optionalAttrs ((h.rootFilesystem or null) == "read-only") { readOnlyRootFilesystem = true; }
+    );
+
+  # A probe reads a socket through its OWN container's port table, which is the whole reason a
+  # probe is not a property of the app.
+  containerProbesOf = c:
+    lib.optionalAttrs ((c.readiness or null) != null) {
+      readiness = dropNulls ({ port = c.primaryPort; } // c.readiness);
+    }
+    // lib.optionalAttrs ((c.liveness or null) != null) {
+      liveness = dropNulls ({ port = c.primaryPort; } // c.liveness);
+    };
+
+  companionsOf = entry: w:
+    lib.mapAttrs
+      (cname: c:
+        {
+          image = containerImageOf entry w (w.companionImages.${cname} or null) c;
+          command = c.command or [ ];
+          args = c.args or [ ];
+          env = c.env or { };
+          ports = lib.mapAttrs (_: normalisePort) (c.ports or { });
+          mounts = remapMounts w (c.mounts or { });
+          security = containerSecurityOf entry w c;
+          probes = containerProbesOf c;
+          # A companion nobody sized asks for nothing, which renders no `resources` block at all
+          # rather than a zero -- a different and much worse claim.
+          resources = resourcesFrom (w.companionResources.${cname} or null);
+        })
+      (entry.companions or { });
+
+  initOf = entry: w:
+    map
+      (c: {
+        inherit (c) name;
+        image = containerImageOf entry w (w.initImages.${c.name} or null) c;
+        command = c.command or [ ];
+        args = c.args or [ ];
+        env = c.env or { };
+        mounts = remapMounts w (c.mounts or { });
+        security = containerSecurityOf entry w c;
+        # NO PORTS AND NO PROBES: the API server rejects a readiness probe on a non-restartable
+        # init container, and a port on a process that has already exited is a fact about nothing.
+      })
+      (entry.init or [ ]);
+
+  resourcesFrom = r:
+    if r == null then { requests = { }; limits = { }; }
+    else {
+      requests = dropNulls { cpu = r.cpuRequest; memory = r.memoryRequest; };
+      limits = dropNulls { cpu = r.cpuLimit; memory = r.memoryLimit; };
+    };
 
   # WHERE ANOTHER SERVICE IS. The catalogue names the VARIABLE this software reads an endpoint
   # from; the declaration says what the endpoint is. Neither half is the other's: which variable a
@@ -332,6 +444,8 @@ let
         gpu = entry.gpu or false;
         singleWriter = entry.singleWriter or false;
       }
+      // lib.optionalAttrs ((entry.init or [ ]) != [ ]) { init = initOf entry w; }
+      // lib.optionalAttrs ((entry.companions or { }) != { }) { companions = companionsOf entry w; }
       // lib.optionalAttrs (w.objectName != null) { name = w.objectName; }
       // lib.optionalAttrs (w.replicas != null) { inherit (w) replicas; }
       // lib.optionalAttrs (w.wake != null) { inherit (w) wake; }
@@ -638,12 +752,17 @@ let
         inherit (x) name w entry;
         keys = sharedStateKeys entry w;
         pathOf = k: mountPathOf entry.state.${k};
+        # EVERY path of a multi-mount volume, because a volume mounted at four places can cover
+        # another one at any of them, and checking only the first is checking one case in four.
+        nests = outer: inner:
+          lib.any (o: lib.any (i: lib.hasPrefix "${o}/" i) (pathsOfEntry entry.state.${inner}))
+            (pathsOfEntry entry.state.${outer});
         pairs = lib.concatMap
           (outer: lib.concatMap
             (inner:
               lib.optional
                 (outer != inner
-                  && lib.hasPrefix "${pathOf outer}/" (pathOf inner)
+                  && nests outer inner
                   && volumeNameOf w inner < volumeNameOf w outer)
                 { inherit outer inner; })
             keys)
@@ -677,12 +796,15 @@ let
         inherit (x) name w entry;
         keys = sharedStateKeys entry w;
         pathOf = k: mountPathOf entry.state.${k};
+        nests = outer: inner:
+          lib.any (o: lib.any (i: lib.hasPrefix "${o}/" i) (pathsOfEntry entry.state.${inner}))
+            (pathsOfEntry entry.state.${outer});
         renamed = lib.concatMap
           (outer: lib.concatMap
             (inner:
               lib.optional
                 (outer != inner
-                  && lib.hasPrefix "${pathOf outer}/" (pathOf inner)
+                  && nests outer inner
                   && !(inner < outer)
                   && volumeNameOf w inner < volumeNameOf w outer)
                 { inherit outer inner; })
@@ -734,6 +856,72 @@ let
             "${namespace}: workload `${name}` runs software that reads its own user and group ids "
             + "from its environment, and no identity is named for it to read. It would start as "
             + "whatever the image's own USER is, while this declaration looks like it decided.";
+        }
+      ])
+    workloads;
+
+  # ── The other containers, refused in both directions ─────────────────────────────────────────
+  containerAssertions = lib.concatMap
+    (x:
+      let
+        inherit (x) name w entry;
+        comps = entry.companions or { };
+        inits = entry.init or [ ];
+        ownImage = c: (c.image or null) != null;
+
+        compsOwn = lib.attrNames (lib.filterAttrs (_: ownImage) comps);
+        compsShared = lib.attrNames (lib.filterAttrs (_: c: !(ownImage c)) comps);
+        initsOwn = map (c: c.name) (lib.filter ownImage inits);
+        initsShared = map (c: c.name) (lib.filter (c: !(ownImage c)) inits);
+
+        missingCompImage = lib.subtractLists (lib.attrNames w.companionImages) compsOwn;
+        strayCompImage = lib.subtractLists compsOwn (lib.attrNames w.companionImages);
+        missingInitImage = lib.subtractLists (lib.attrNames w.initImages) initsOwn;
+        strayInitImage = lib.subtractLists initsOwn (lib.attrNames w.initImages);
+        straySizing = lib.subtractLists (lib.attrNames comps) (lib.attrNames w.companionResources);
+
+        initNames = map (c: c.name) inits;
+        podNames = [ (if w.objectName != null then w.objectName else name) ]
+          ++ lib.attrNames comps ++ initNames;
+      in
+      [
+        {
+          assertion = missingCompImage == [ ] && missingInitImage == [ ];
+          message =
+            "${namespace}: workload `${name}` has containers that run an image of their own ("
+            + lib.concatMapStringsSep ", " (k: "`${k}`") (missingCompImage ++ missingInitImage)
+            + ") and no reference was given for "
+            + (if lib.length (missingCompImage ++ missingInitImage) == 1 then "it" else "them")
+            + ". The catalogue holds the repository; which BUILD of it runs is a deployment's, "
+            + "exactly as it is for the application's own image -- and the fallback is the bare "
+            + "untagged repository, which is two syncs of one rendered tree running different code.";
+        }
+        {
+          assertion = strayCompImage == [ ] && strayInitImage == [ ];
+          message =
+            "${namespace}: workload `${name}` gives an image for "
+            + lib.concatMapStringsSep ", " (k: "`${k}`") (strayCompImage ++ strayInitImage)
+            + ", which is not a container of `${w.${selector}}` that runs an image of its own. A "
+            + "container that shares the application's installation shares its image; a name that "
+            + "is neither is a typo, and a typo here renders a container nobody declared.";
+        }
+        {
+          assertion = straySizing == [ ];
+          message =
+            "${namespace}: workload `${name}` sizes "
+            + lib.concatMapStringsSep ", " (k: "`${k}`") straySizing
+            + ", which is not a container of `${w.${selector}}`. A request against a container "
+            + "that does not exist is a number the scheduler never sees, in a declaration that "
+            + "reads as though somebody had measured it.";
+        }
+        {
+          # The kubelet keys containers by name and so does every overlay written against them.
+          assertion = lib.length (lib.unique podNames) == lib.length podNames;
+          message =
+            "${namespace}: workload `${name}` has two containers of one name in a single pod ("
+            + lib.concatStringsSep ", " podNames
+            + "). The kubelet keys them by name, so that is one container that runs and one that "
+            + "quietly does not.";
         }
       ])
     workloads;
@@ -1045,6 +1233,43 @@ let
     };
   };
 
+  # The four scalars, named once: what the app's own container costs and what a companion costs
+  # are the same question asked about a different container.
+  resourceScalars = {
+    cpuRequest = lib.mkOption {
+      type = lib.types.nullOr lib.types.str;
+      default = null;
+      example = "10m";
+      description = ''
+        CPU the scheduler must find for this container. A REQUEST is what placement is computed
+        from, and a container with none is placed as if it were free.
+      '';
+    };
+    memoryRequest = lib.mkOption {
+      type = lib.types.nullOr lib.types.str;
+      default = null;
+      example = "16Mi";
+      description = "Memory the scheduler must find for this container.";
+    };
+    cpuLimit = lib.mkOption {
+      type = lib.types.nullOr lib.types.str;
+      default = null;
+      description = ''
+        CPU ceiling. A CPU limit is a THROTTLE rather than a kill threshold, which is usually not
+        what anybody wants -- an app that briefly needs more is made slower rather than stopped.
+      '';
+    };
+    memoryLimit = lib.mkOption {
+      type = lib.types.nullOr lib.types.str;
+      default = null;
+      example = "256Mi";
+      description = ''
+        Memory ceiling, which IS a kill threshold -- usually what a leaky application wants, and
+        the reason this one is worth setting where the CPU one is not.
+      '';
+    };
+  };
+
   commonOptions = {
     enable = lib.mkOption {
       type = lib.types.bool;
@@ -1083,6 +1308,39 @@ let
         Whole image reference, replacing the catalogue's repository plus `version`. Set it to PIN
         BY DIGEST, which is the only way two syncs of an identical rendered tree cannot run
         different code — the grammar warns while it is unpinned.
+      '';
+    };
+
+    companionImages = lib.mkOption {
+      type = lib.types.attrsOf lib.types.str;
+      default = { };
+      description = ''
+        Whole image references for companions that run an image OF THEIR OWN, keyed by the
+        catalogue's name for the companion. Required for exactly those, and refused for the ones
+        that share the application's installation: a process shipping inside the app's own image
+        has no second build to pin, and naming one is a typo that renders a container nobody
+        declared.
+      '';
+    };
+
+    companionResources = lib.mkOption {
+      type = lib.types.attrsOf (lib.types.submodule { options = resourceScalars; });
+      default = { };
+      description = ''
+        What each companion costs on this hardware, keyed by the catalogue's name for it. One
+        nobody sized asks for nothing, which renders no resources block at all rather than a zero
+        -- a different and much worse claim.
+      '';
+    };
+
+    initImages = lib.mkOption {
+      type = lib.types.attrsOf lib.types.str;
+      default = { };
+      description = ''
+        Whole image references for init steps that run an image of their own, keyed by the
+        catalogue's name for the step. Same rule as `companionImages`, for the same reason: a step
+        running the application's own image is pinned by the application's own reference, and a
+        step running a tool is pinned by whoever chose the tool.
       '';
     };
 
@@ -1235,40 +1493,7 @@ let
       '';
     };
 
-    resources = {
-      cpuRequest = lib.mkOption {
-        type = lib.types.nullOr lib.types.str;
-        default = null;
-        example = "10m";
-        description = ''
-          CPU the scheduler must find for this container. A REQUEST is what placement is computed
-          from, and a container with none is placed as if it were free.
-        '';
-      };
-      memoryRequest = lib.mkOption {
-        type = lib.types.nullOr lib.types.str;
-        default = null;
-        example = "16Mi";
-        description = "Memory the scheduler must find for this container.";
-      };
-      cpuLimit = lib.mkOption {
-        type = lib.types.nullOr lib.types.str;
-        default = null;
-        description = ''
-          CPU ceiling. A CPU limit is a THROTTLE rather than a kill threshold, which is usually not
-          what anybody wants — an app that briefly needs more is made slower rather than stopped.
-        '';
-      };
-      memoryLimit = lib.mkOption {
-        type = lib.types.nullOr lib.types.str;
-        default = null;
-        example = "256Mi";
-        description = ''
-          Memory ceiling, which IS a kill threshold — usually what a leaky application wants, and
-          the reason this one is worth setting where the CPU one is not.
-        '';
-      };
-    };
+    resources = resourceScalars;
 
     credentials = {
       secret = lib.mkOption {
@@ -1459,6 +1684,7 @@ in
       ++ imageAssertions
       ++ idleAssertions
       ++ replicaAssertions
+      ++ containerAssertions
       ++ volumeNameAssertions
       ++ authAssertions
       ++ nestingAssertions

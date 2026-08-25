@@ -281,6 +281,23 @@ let
         (with' { nixconsumer.applications.two.exposure = "public"; })
       && renders (with' { nixconsumer.applications.two.exposure = "public"; });
 
+    # ── The other containers ─────────────────────────────────────────────────────────────────
+    "a companion with an image of its own and no reference given is refused" =
+      failsWith "no reference was given"
+        (with' { nixconsumer.applications.one.companionImages = lib.mkForce { }; });
+
+    "an image given for a container that shares the app's installation is refused" =
+      failsWith "shares the application's installation"
+        (with' { nixconsumer.applications.one.initImages.seed-config = "registry.example.com/x:1"; });
+
+    "sizing a container the pod does not have is refused" =
+      failsWith "is not a container of"
+        (with' { nixconsumer.applications.one.companionResources.nope.cpuRequest = "1m"; });
+
+    "two containers of one name in a single pod is refused" =
+      failsWith "two containers of one name"
+        (with' { nixconsumer.applications.one.objectName = "front"; });
+
     "a catalogue entry that does not exist cannot be named" =
       !renders (with' { nixconsumer.applications.one.app = "not-in-the-catalogue"; });
 

@@ -77,6 +77,14 @@
       env.ALPHA_MODE = "declared"; # merged OVER the catalogue's, so the render shows this one
       args = [ "--verbose" ];
 
+      # Which build of the front runs, and what it costs. The init step needs neither: it runs the
+      # application's own image, pinned by the application's own reference.
+      companionImages.front = "registry.example.com/example-org/front:2.0.0@sha256:1111111111111111111111111111111111111111111111111111111111111111";
+      companionResources.front = {
+        cpuRequest = "5m";
+        memoryRequest = "16Mi";
+      };
+
       resources = {
         cpuRequest = "10m";
         memoryRequest = "32Mi";

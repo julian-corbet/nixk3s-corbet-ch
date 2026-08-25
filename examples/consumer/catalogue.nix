@@ -26,8 +26,14 @@
       # spelling deliberately: it is the only entry exercising it.
       # A SHORTLIST, because a scratch directory under this software's store is discarded on
       # exactly the restart the store exists to survive. Five backings exist; this one accepts two.
+      # ONE VOLUME, TWO PLACES. Real software does this constantly: the data lives at one path and
+      # a configuration subdirectory of the SAME volume is mounted somewhere else entirely. Two
+      # volumes would be two directories and the config would not survive with the data.
       state.data = {
-        mountPath = "/var/lib/alpha";
+        mounts = [
+          { mountPath = "/var/lib/alpha"; }
+          { mountPath = "/etc/alpha"; subPath = "config"; }
+        ];
         backings = [ "claim" "hostPath" ];
       };
 
@@ -86,6 +92,33 @@
       # ONE PROCESS MAY HAVE THIS OPEN. Not a scaling preference: a second copy corrupts the
       # store rather than sharing the load.
       singleWriter = true;
+
+      # RUNS ONCE, BEFORE ANYTHING ELSE, IN THE APP'S OWN IMAGE -- because the thing it writes is
+      # the app's own configuration and only the app knows how to generate it. `image = null` is
+      # the common case people forget: a process shipping inside the application's installation
+      # has no image of its own to pin.
+      init = [
+        {
+          name = "seed-config";
+          image = null;
+          command = [ "sh" "-c" "test -f /etc/alpha/alpha.yaml || alpha init" ];
+          mounts.data = [ { mountPath = "/etc/alpha"; subPath = "config"; } ];
+          hardening = { capabilities = "none"; privilegeEscalation = "never"; };
+        }
+      ];
+
+      # AND ONE CONTAINER THAT RUNS ALONGSIDE, with an image of its own -- so the declaration must
+      # say which build, and the guard refuses it for the init step above, which has none.
+      companions.front = {
+        image = "registry.example.com/example-org/front";
+        # NOT `http`: a container port name must be unique across the whole POD, or a targetPort
+        # by name reaches whichever container the attribute sort put last.
+        ports.web = { number = 8081; publish = true; servicePort = 80; };
+        primaryPort = "web";
+        mounts.data = [ { mountPath = "/srv"; readOnly = true; } ];
+        hardening = { capabilities = "none"; privilegeEscalation = "never"; };
+        readiness = { path = "/healthz"; periodSeconds = 10; failureThreshold = 3; };
+      };
 
       hardening = {
         capabilities = "none";
