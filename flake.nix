@@ -74,7 +74,25 @@
         default = { imports = [ ./modules/apps ./modules/tenancy ./modules/addressing ]; };
       };
 
-      lib = { };
+      lib = {
+        # THE CONSUMER SIDE OF THE GRAMMAR, published so it stops being copied.
+        #
+        # This repository publishes `nixk3s.apps` — what a workload declares — but published no way
+        # to CONSUME it from a catalogue, so every repository that owned one wrote its own
+        # translator and fourteen of them appeared. They were not fourteen designs: `addressingOf`
+        # was byte-identical in nine, `imageOf` in seven, and the rest of the helpers in twelve or
+        # thirteen apiece. Copies age separately, and they did — a term added to the grammar
+        # reached eight of thirteen and stopped, because the pass that added it only looked at the
+        # repositories a consumer happened to compose.
+        #
+        # A catalogue repository now calls this with its own catalogue and gets the whole
+        # declaration vocabulary, the knowledge/value split, the assertions and the warnings. What
+        # only IT knows — a WOPI host list, a retention argument, a write probe, a GPU hook — it
+        # supplies through `extend` and `extraOptions`, because roughly sixty catalogue fields are
+        # read by exactly one repository and pretending those were universal would be a worse lie
+        # than the copies were.
+        mkConsumerModule = import ./lib/consumer.nix { inherit lib; };
+      };
 
       # Two checks, because this repository has two kinds of module and neither
       # was evaluated by anything before now.
