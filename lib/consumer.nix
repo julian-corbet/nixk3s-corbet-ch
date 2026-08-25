@@ -588,12 +588,20 @@ let
       let inherit (x) name w entry; in
       [
         {
-          assertion = !((entry.rootStart or false) && w.identity != null);
+          # ONLY when there is no environment path for the role to arrive by. An image that starts
+          # as root AND reads its ids from the environment is the ordinary drop-privileges pattern:
+          # it needs uid 0 to do its setup and then becomes the role it was handed. That is not a
+          # contradiction, it is how the role gets used. The contradiction is a root-start image
+          # with NO such variable, where the role reaches nothing at all.
+          assertion =
+            !((entry.rootStart or false)
+              && w.identity != null
+              && (entry.identityEnv or null) == null);
           message =
             "${namespace}: workload `${name}` names the identity `${toString w.identity}`, and "
-            + "`${w.${selector}}` can only START as uid 0 -- it drops privileges itself, after it "
-            + "has done the work that needs them. The role would be ignored rather than applied, "
-            + "which is worse than refusing it: somebody would believe this pod was unprivileged.";
+            + "`${w.${selector}}` can only START as uid 0 with no variable to read a role from. The "
+            + "role would be ignored rather than applied, which is worse than refusing it: somebody "
+            + "would believe this pod was unprivileged.";
         }
         {
           assertion = (entry.identityEnv or null) == null || w.identity != null;
@@ -1153,19 +1161,22 @@ in
     ${platformOption} = {
       namespace = lib.mkOption {
         type = lib.types.str;
-        default = namespace;
         description = ''
-          The namespace workloads land in unless one says otherwise. A cluster fact: this
-          repository knows what its software IS and never where somebody puts it.
+          The namespace workloads land in unless one says otherwise.
+
+          DEFAULTED NOWHERE, deliberately. A default here could only be this repository's own name,
+          which is a guess at a cluster's layout dressed up as a value -- and a workload that lands
+          in a namespace nobody chose is one somebody has to go looking for. A cluster fact: this
+          repository knows what its software IS and never where anybody puts it.
         '';
       };
 
       project = lib.mkOption {
         type = lib.types.str;
-        default = namespace;
         description = ''
           The delivery project workloads belong to unless one says otherwise. Named by the
-          consumer's tenancy layer, which this repository cannot see.
+          consumer's tenancy layer, which this repository cannot see -- so, like `namespace`, it is
+          defaulted nowhere rather than guessed.
         '';
       };
 
