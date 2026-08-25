@@ -253,6 +253,19 @@
 
           # THE FACTORY'S OWN PROMISES, off the rendered bytes. Fourteen repositories' translators
           # collapsed into one function, so a mistake here is a mistake in every catalogue at once.
+          # THE OTHER HALF: what the factory REFUSES. The render check proves what comes out when a
+          # declaration is right; this proves what happens when one is wrong, which is the half
+          # that keeps thirteen catalogues safe.
+          consumer-eval = import ./checks/consumer-eval.nix {
+            inherit pkgs lib nixidy;
+            appsModule = self.nixidyModules.apps;
+            consumerModule = self.lib.mkConsumerModule {
+              namespace = "nixconsumer";
+              catalogue = (import ./examples/consumer/catalogue.nix { }).entries;
+            };
+            values = ./examples/consumer/values.nix;
+          };
+
           consumer-render = import ./checks/consumer-render.nix {
             inherit pkgs lib;
             env = consumerEnv;

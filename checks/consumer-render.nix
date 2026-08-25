@@ -125,10 +125,31 @@ pkgs.runCommand "nixk3s-consumer-render"
     "$(y '.spec.template.spec.containers[0].securityContext' "$two/Deployment-two.yaml")"
 
   echo "== a catalogue that omits env, args and credentials still renders =="
-  check "no env at all" "null" \
-    "$(y '.spec.template.spec.containers[0].env' "$two/Deployment-two.yaml")"
   check "no args at all" "null" \
     "$(y '.spec.template.spec.containers[0].args' "$two/Deployment-two.yaml")"
+  check "no credentials at all" "" \
+    "$(y '.spec.template.spec.containers[0].env[] | select(.valueFrom)' "$two/Deployment-two.yaml")"
+
+  echo "== an identity is a ROLE here and NUMBERS in the manifest, and never a name =="
+  # This catalogue names variables the software reads its own ids from, so the grammar delivers the
+  # identity THAT way rather than as a pod securityContext -- the two are alternatives, and which
+  # one applies is the catalogue's fact. Both halves are asserted, including the absence.
+  check "uid reaches the variable the catalogue named" "3001" \
+    "$(y '.spec.template.spec.containers[0].env[] | select(.name=="BETA_UID") | .value' "$two/Deployment-two.yaml")"
+  check "gid reaches the variable the catalogue named" "3001" \
+    "$(y '.spec.template.spec.containers[0].env[] | select(.name=="BETA_GID") | .value' "$two/Deployment-two.yaml")"
+  check "an env identity renders no runAsUser" "null" \
+    "$(y '.spec.template.spec.securityContext.runAsUser' "$two/Deployment-two.yaml")"
+  check "no role NAME anywhere in the rendered tree" "0" \
+    "$(grep -rl "example-role" "$manifests" | wc -l)"
+
+  echo "== the endpoint of a needed service arrives in the variable the catalogue named =="
+  check "requires -> env" "http://example-index:9200" \
+    "$(y '.spec.template.spec.containers[0].env[] | select(.name=="ALPHA_INDEX_URL") | .value' "$one/Deployment-one.yaml")"
+
+  echo "== its own public URL arrives in the variable the catalogue named =="
+  check "publicUrl -> env" "https://example.com" \
+    "$(y '.spec.template.spec.containers[0].env[] | select(.name=="ALPHA_PUBLIC_URL") | .value' "$one/Deployment-one.yaml")"
 
   echo "== the image is the catalogue repository plus the declaration's version =="
   check "image built from version" "registry.example.com/example-org/alpha:1.4.2" \

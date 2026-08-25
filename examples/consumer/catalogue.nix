@@ -43,6 +43,17 @@
         };
       };
 
+      # WHICH VARIABLE carries the endpoint of a service this one needs. Never the endpoint.
+      requires.index.env = "ALPHA_INDEX_URL";
+
+      # WHICH VARIABLE this software reads its own public URL from, for the links it generates.
+      selfUrlEnv = "ALPHA_PUBLIC_URL";
+
+      # IT HAS WORK THAT HAPPENS WHILE NOBODY IS LOOKING, so idling it to zero does not make that
+      # work late -- it makes it not happen. The factory refuses the combination rather than
+      # warning about it.
+      idleSafe = false;
+
       hardening = {
         capabilities = "none";
         privilegeEscalation = "never";
@@ -77,6 +88,14 @@
         periodSeconds = 30;
         failureThreshold = 3;
         timeoutSeconds = 2;
+      };
+
+      # WHICH VARIABLE this software reads its own uid from. The uid itself is never here: a role
+      # is resolved against the consumer's identity registry, which is the only thing that knows
+      # what a role means on a given fleet.
+      identityEnv = {
+        user = "BETA_UID";
+        group = "BETA_GID";
       };
 
       # NO `env`, NO `args`, NO `credentials`, NO `hardening`. Every one of those is read through a

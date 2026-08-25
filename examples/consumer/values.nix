@@ -12,6 +12,13 @@
   nixidy.target.repository = "https://example.com/example-org/example-gitops.git";
   nixidy.target.branch = "main";
 
+  # The fleet's identity registry: what a ROLE means in numbers here. A catalogue names a role and
+  # never a number, and this is the only place the two meet.
+  nixk3s.appPlatform.identities.example-role = {
+    uid = 3001;
+    gid = 3001;
+  };
+
   nixconsumer.clusterPlatform = {
     namespace = "example-consumer";
     project = "example";
@@ -47,6 +54,11 @@
         secrets.ALPHA_SMTP_PASSWORD = "example-shared-mail";
       };
 
+      # WHERE the service it needs actually is, and what it should call itself. The catalogue named
+      # both variables; neither URL could have been written there.
+      requires.index.endpoint = "http://example-index:9200";
+      publicUrl = "https://example.com";
+
       env.ALPHA_MODE = "declared"; # merged OVER the catalogue's, so the render shows this one
       args = [ "--verbose" ];
 
@@ -65,6 +77,9 @@
       # A claim rather than a node path, so the render covers the other backing. The catalogue's
       # own readOnly is NOT restated here -- the check proves it reaches the mount anyway.
       state.reference.claim = "example-reference";
+
+      # A ROLE, resolved against the platform's identity registry below.
+      identity = "example-role";
 
       # `harden` is left at its default with a catalogue that states no hardening classes. The
       # question this answers is whether that renders nothing or throws.

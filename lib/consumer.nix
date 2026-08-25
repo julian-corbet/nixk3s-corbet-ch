@@ -198,6 +198,51 @@ let
       })
       (lib.groupBy (secretFor w) covered);
 
+  # WHERE ANOTHER SERVICE IS. The catalogue names the VARIABLE this software reads an endpoint
+  # from; the declaration says what the endpoint is. Neither half is the other's: which variable a
+  # program looks in is a property of the program, and what answers on the other end is a property
+  # of one cluster on one day.
+  requiresEnvOf = entry: w:
+    lib.mapAttrs' (key: r: lib.nameValuePair (entry.requires.${key}).env r.endpoint) w.requires;
+
+  # ITS OWN PUBLIC URL, for the software that has to generate links to itself. Same split: the
+  # catalogue names the variable, the declaration supplies the URL, and a catalogue that names no
+  # such variable makes the declaration's `publicUrl` unreachable rather than silently ignored.
+  selfEnvOf = entry: w:
+    lib.optionalAttrs ((entry.selfUrlEnv or null) != null && w.publicUrl != null) {
+      ${entry.selfUrlEnv} = w.publicUrl;
+    };
+
+  # WHO IT RUNS AS. A ROLE, never a number: the grammar resolves a role against the consumer's own
+  # identity registry, so a uid typed here would be a second authority on it. The catalogue's part
+  # is narrow and factual -- whether the image must START as root before dropping, and which
+  # variable (if any) the software reads its own uid from.
+  identityOf = entry: w:
+    if (entry.identityEnv or null) != null && w.identity != null
+    then { identity = w.identity; identityEnv = entry.identityEnv; }
+    else if (entry.rootStart or false) then { identity = "root"; }
+    else lib.optionalAttrs (w.identity != null) { identity = w.identity; };
+
+  # ── The address test ─────────────────────────────────────────────────────────────────────────
+  #
+  # An endpoint names a SERVICE. An address is a fact about one network on one day, and a workload
+  # handed one has been handed something that will be wrong later and wrong SILENTLY -- the
+  # connection simply stops being answered. Refusing the literal is also what keeps a declaration
+  # written against this module publishable.
+  authorityOf = url:
+    lib.head (lib.splitString "/" (lib.last (lib.splitString "://" url)));
+  hostOf = url: lib.head (lib.splitString ":" (lib.last (lib.splitString "@" (authorityOf url))));
+
+  digits = lib.stringToCharacters "0123456789";
+  isAddress = url:
+    let host = hostOf url; in
+    # A bracketed authority is IPv6 and nothing else; the rest is the dotted-quad test, which needs
+    # the dot as well as the digits -- a bare number is a name somebody is allowed to have.
+    lib.hasPrefix "[" (authorityOf url)
+    || (host != ""
+        && lib.hasInfix "." host
+        && lib.all (c: c == "." || lib.elem c digits) (lib.stringToCharacters host));
+
   # Handed to the band model only when the consumer says it is part of the render: `origin` and
   # `slot` are ITS terms, and defining them into a render that does not declare them is an eval
   # error rather than a graceful no-op.
@@ -216,13 +261,17 @@ let
         ports = portsOf entry;
         state = stateOf entry w;
         secrets = secretsOf entry w;
-        env = (entry.env or { }) // w.env;
+        # ORDER IS THE POINT. The catalogue's own environment first, then the endpoints of the
+        # services this one needs, then its own public URL, then whatever the declaration adds --
+        # so a consumer can override any of it and nothing can override the consumer.
+        env = (entry.env or { }) // requiresEnvOf entry w // selfEnvOf entry w // w.env;
         args = (entry.args or [ ]) ++ w.args;
         probes = probesOf entry w;
         security = securityOf entry w;
         resources = resourcesOf w;
       }
       // lib.optionalAttrs (w.wake != null) { inherit (w) wake; }
+      // identityOf entry w
       // addressingOf w
     );
 
@@ -324,6 +373,81 @@ let
             + "Secret for a variable the software already looks in; it cannot invent the variable.";
         }
       ])
+    workloads;
+
+  # IDLING IS A CORRECTNESS QUESTION, not a preference, which is why this refuses rather than
+  # warns. A catalogue says a workload is unsafe to idle when it has work that happens while nobody
+  # is looking -- a timer, a queue, a directory watch. Scaling that to zero does not make it slow,
+  # it makes it silently not happen.
+  idleAssertions = lib.concatMap
+    (x:
+      let inherit (x) name w entry; in
+      [{
+        assertion = w.scaling != "scale-to-zero" || (entry.idleSafe or true);
+        message =
+          "${namespace}: workload `${name}` is declared scale-to-zero, and `${w.${selector}}` is "
+          + "catalogued as unsafe to idle -- it has work that happens while nobody is looking. At "
+          + "zero replicas that work does not happen late, it does not happen. Leave it `always` "
+          + "and idle whatever fronts it instead.";
+      }])
+    workloads;
+
+  # Both directions again. A dependency the catalogue names and the declaration leaves out is a
+  # workload started without knowing where something is; one the declaration names and the
+  # catalogue does not know about is a URL nothing will ever read.
+  requiresAssertions = lib.concatMap
+    (x:
+      let
+        inherit (x) name w entry;
+        catalogued = lib.attrNames (entry.requires or { });
+        declared = lib.attrNames w.requires;
+        missing = lib.subtractLists declared catalogued;
+        stray = lib.subtractLists catalogued declared;
+        literals = lib.filter (k: isAddress (w.requires.${k}).endpoint)
+          (lib.filter (k: lib.elem k catalogued) declared);
+      in
+      [
+        {
+          assertion = missing == [ ];
+          message =
+            "${namespace}: workload `${name}` needs "
+            + lib.concatMapStringsSep ", " (k: "`${k}`") missing
+            + " and is not told where to find "
+            + (if lib.length missing == 1 then "it" else "them")
+            + ". A workload that starts without knowing where its dependency is fails later and "
+            + "further from the cause than one that is refused here.";
+        }
+        {
+          assertion = stray == [ ];
+          message =
+            "${namespace}: workload `${name}` is told where to find "
+            + lib.concatMapStringsSep ", " (k: "`${k}`") stray
+            + ", which `${w.${selector}}` does not read. An endpoint nothing consumes is a typo, "
+            + "not a declaration.";
+        }
+        {
+          assertion = literals == [ ];
+          message =
+            "${namespace}: workload `${name}` is given a literal ADDRESS for "
+            + lib.concatMapStringsSep ", " (k: "`${k}`") literals
+            + ". An address is one network on one day: name the service instead, or the workload "
+            + "goes on holding a number nothing answers on and fails silently when it changes.";
+        }
+      ])
+    workloads;
+
+  # A public URL nothing reads is not harmless -- it is somebody believing they configured a link
+  # base. The catalogue decides whether this software has one to configure.
+  publicUrlAssertions = lib.concatMap
+    (x:
+      let inherit (x) name w entry; in
+      [{
+        assertion = w.publicUrl == null || (entry.selfUrlEnv or null) != null;
+        message =
+          "${namespace}: workload `${name}` is given a public URL, and `${w.${selector}}` reads no "
+          + "variable to carry one. Nothing would consume it, so nothing would go wrong visibly -- "
+          + "which is the whole reason this is an error rather than an unused value.";
+      }])
     workloads;
 
   # A namespace outlives every workload in it, so exactly one thing may own it. Two anchors is not
@@ -707,6 +831,62 @@ let
       };
     };
 
+    requires = lib.mkOption {
+      default = { };
+      example = lib.literalExpression ''{ index.endpoint = "http://example-index:9200"; }'';
+      description = ''
+        WHERE each service this workload needs can be reached, keyed by the SAME names the
+        catalogue uses. The catalogue says which variable carries the endpoint; this says what the
+        endpoint is. Nothing here renders those services -- they have their own lifecycles, their
+        own storage and their own owners.
+
+        Leaving one out is refused rather than rendered: a workload that starts without knowing
+        where its index is fails later and further from the cause.
+      '';
+      type = lib.types.attrsOf (lib.types.submodule {
+        options = {
+          endpoint = lib.mkOption {
+            type = lib.types.str;
+            example = "http://example-index:9200";
+            description = ''
+              The URL, NAMING A SERVICE. A literal address is refused: an address is one network on
+              one day, and a workload holding a stale one fails silently rather than loudly.
+            '';
+          };
+        };
+      });
+    };
+
+    publicUrl = lib.mkOption {
+      type = lib.types.nullOr lib.types.str;
+      default = null;
+      example = "https://example.com";
+      description = ''
+        The URL this workload is reached at, for software that generates links to ITSELF -- a
+        confirmation mail, a share link, an OAuth redirect. Only useful when the catalogue names a
+        variable to carry it, and stating it where the catalogue names none is refused rather than
+        quietly dropped.
+
+        It is not an exposure term and grants nothing: `exposure` decides who can reach the
+        workload, and this only tells the workload what to call itself.
+      '';
+    };
+
+    identity = lib.mkOption {
+      type = lib.types.nullOr lib.types.str;
+      default = null;
+      example = "media";
+      description = ''
+        WHO this workload runs as, as a ROLE and never a number. The grammar resolves the role
+        against the consumer's own identity registry, which is the only thing that knows what uid
+        a role means on a given fleet -- a number typed here would be a second authority on it, and
+        the two would drift.
+
+        Null means the image's own user, which is the honest default: a workload nobody has decided
+        an identity for has not acquired one by omission.
+      '';
+    };
+
     env = lib.mkOption {
       type = lib.types.attrsOf lib.types.str;
       default = { };
@@ -798,6 +978,9 @@ in
       stateAssertions
       ++ probeAssertions
       ++ credentialAssertions
+      ++ idleAssertions
+      ++ requiresAssertions
+      ++ publicUrlAssertions
       ++ anchorAssertions
       ++ slotAssertions
       ++ extraAssertions workloads;
