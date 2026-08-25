@@ -67,9 +67,25 @@ let
       failsWith "must back every directory it writes"
         (with' { nixconsumer.applications.one.state = lib.mkForce { }; });
 
-    "a directory backed by neither a claim nor a node path is refused" =
-      failsWith "EITHER an existing claim OR"
+    "a directory with no backing at all is refused" =
+      failsWith "EXACTLY ONE of a claim"
         (with' { nixconsumer.applications.one.state.data = lib.mkForce { }; });
+
+    "a directory with TWO backings is refused -- the other half of the same guard" =
+      failsWith "EXACTLY ONE of a claim"
+        (with' { nixconsumer.applications.one.state.data.claim = "example-second-backing"; });
+
+    "a scratch directory counts as a backing, so it renders" =
+      renders (with' {
+        nixconsumer.applications.two.state.reference = lib.mkForce { emptyDir = true; };
+      });
+
+    "asking the kubelet to own a directory the catalogue says GROWS is refused" =
+      failsWith "GROWS"
+        (with' { nixconsumer.applications.one.state.archive.ownership = "kubelet"; });
+
+    "the same ownership on a directory that does not grow renders" =
+      renders (with' { nixconsumer.applications.two.state.reference.ownership = "kubelet"; });
 
     "a budget for a probe the software does not warrant is refused" =
       failsWith "does not warrant"

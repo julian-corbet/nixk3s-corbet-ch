@@ -51,21 +51,27 @@ pkgs.runCommand "nixk3s-consumer-render"
 
   echo "== both spellings of a directory reach a volumeMount =="
   check "string state -> mountPath" "/var/lib/alpha" \
-    "$(y '.spec.template.spec.containers[0].volumeMounts[0].mountPath' "$one/Deployment-one.yaml")"
+    "$(y '.spec.template.spec.containers[0].volumeMounts[] | select(.name=="data") | .mountPath' "$one/Deployment-one.yaml")"
+  check "the second, attrset-spelled directory too" "/var/lib/alpha/archive" \
+    "$(y '.spec.template.spec.containers[0].volumeMounts[] | select(.name=="archive") | .mountPath' "$one/Deployment-one.yaml")"
   check "attrset state -> mountPath" "/srv/reference" \
-    "$(y '.spec.template.spec.containers[0].volumeMounts[0].mountPath' "$two/Deployment-two.yaml")"
+    "$(y '.spec.template.spec.containers[0].volumeMounts[] | select(.name=="reference") | .mountPath' "$two/Deployment-two.yaml")"
 
   echo "== a readOnly the CATALOGUE states reaches the mount with no declaration saying so =="
   check "catalogue readOnly wins" "true" \
-    "$(y '.spec.template.spec.containers[0].volumeMounts[0].readOnly' "$two/Deployment-two.yaml")"
+    "$(y '.spec.template.spec.containers[0].volumeMounts[] | select(.name=="reference") | .readOnly' "$two/Deployment-two.yaml")"
 
   echo "== the backing the declaration chose is the one that renders =="
   check "node path backing" "/example/state/one" \
-    "$(y '.spec.template.spec.volumes[0].hostPath.path' "$one/Deployment-one.yaml")"
+    "$(y '.spec.template.spec.volumes[] | select(.name=="data") | .hostPath.path' "$one/Deployment-one.yaml")"
   check "node path type" "DirectoryOrCreate" \
-    "$(y '.spec.template.spec.volumes[0].hostPath.type' "$one/Deployment-one.yaml")"
+    "$(y '.spec.template.spec.volumes[] | select(.name=="data") | .hostPath.type' "$one/Deployment-one.yaml")"
+
+  echo "== a growing tree left site-curated renders no fsGroup at all =="
+  check "no fsGroup from a curated tree" "null" \
+    "$(y '.spec.template.spec.securityContext.fsGroup' "$one/Deployment-one.yaml")"
   check "claim backing" "example-reference" \
-    "$(y '.spec.template.spec.volumes[0].persistentVolumeClaim.claimName' "$two/Deployment-two.yaml")"
+    "$(y '.spec.template.spec.volumes[] | select(.name=="reference") | .persistentVolumeClaim.claimName' "$two/Deployment-two.yaml")"
 
   echo "== both spellings of a probe produce the same object =="
   check "probes-attrset readiness path" "/healthz" \

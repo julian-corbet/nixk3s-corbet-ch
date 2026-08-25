@@ -22,8 +22,15 @@
       ports.http = 8080;
       primaryPort = "http";
 
-      # A mount path as a bare string, which is what most catalogues here write.
+      # A mount path as a bare string, which is what most catalogues here write. Kept in that
+      # spelling deliberately: it is the only entry exercising it.
       state.data = "/var/lib/alpha";
+
+      # A SECOND directory, in the other spelling, carrying the one fact only a catalogue can state
+      # about a tree: that it GROWS. An archive, an upload tree, a media library -- something whose
+      # whole purpose is to keep getting bigger, which is what makes a recursive chown on every pod
+      # start the wrong idea rather than merely a slow one.
+      state.archive = { mountPath = "/var/lib/alpha/archive"; grows = true; };
 
       env.ALPHA_MODE = "catalogued";
       args = [ "--serve" ];

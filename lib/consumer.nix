@@ -106,13 +106,17 @@ let
 
   # The split in one function: WHERE inside the container comes from the catalogue, WHAT BACKS IT
   # comes from the declaration, and neither side can supply the other's half.
+  # The rendered volume's NAME is the catalogue's name for the directory unless the declaration
+  # says the live object calls it something else -- which only an adoption ever needs.
+  volumeNameOf = w: key: if w.state.${key}.volumeName != null then w.state.${key}.volumeName else key;
+
   stateOf = entry: w:
-    lib.mapAttrs
+    lib.mapAttrs'
       (key: backing:
         let ro = entryReadOnly entry.state.${key}; in
-        {
+        lib.nameValuePair (volumeNameOf w key) {
           mountPath = mountPathOf entry.state.${key};
-          inherit (backing) claim hostPath hostPathType;
+          inherit (backing) claim hostPath hostPathType configMap secret emptyDir ownership;
           readOnly = if ro != null then ro else backing.readOnly;
         })
       w.state;
@@ -298,12 +302,33 @@ let
         }
         {
           assertion = lib.all
-            (backing: (backing.claim == null) != (backing.hostPath == null))
+            (backing:
+              lib.length (lib.filter (b: b) [
+                (backing.claim != null)
+                (backing.hostPath != null)
+                (backing.configMap != null)
+                (backing.secret != null)
+                backing.emptyDir
+              ]) == 1)
             (lib.attrValues w.state);
           message =
-            "${namespace}: workload `${name}` must back each directory with EITHER an existing claim OR "
-            + "a node path, never both and never neither. A directory with no backing is a pod's own "
-            + "filesystem, which is discarded on exactly the restart that state exists to survive.";
+            "${namespace}: workload `${name}` must back each directory with EXACTLY ONE of a claim, "
+            + "a node path, a ConfigMap, a Secret or a scratch directory -- never several and never "
+            + "none. A directory with no backing is a pod's own filesystem, which is discarded on "
+            + "exactly the restart that state exists to survive.";
+        }
+        {
+          # The catalogue's half of an ownership decision: a directory it says GROWS must never be
+          # chowned recursively on every pod start, because that cost scales with the tree and the
+          # tree is the thing that keeps getting bigger.
+          assertion = lib.all
+            (key: !((entry.state.${key}.grows or false) && w.state.${key}.ownership == "kubelet"))
+            (lib.attrNames w.state);
+          message =
+            "${namespace}: workload `${name}` asks the kubelet to own a directory the catalogue says "
+            + "GROWS. That means chowning it recursively on every single pod start, over a tree "
+            + "whose whole purpose is to keep getting bigger -- and on a path somebody curates "
+            + "outside the cluster it destroys ownership that was set there deliberately.";
         }
       ])
     workloads;
@@ -568,6 +593,52 @@ let
         type = lib.types.nullOr lib.types.str;
         default = null;
         description = "A directory on the node. Pins the workload to whichever node holds it.";
+      };
+      configMap = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        description = "An existing ConfigMap, by name, mounted as files. Nothing here creates one.";
+      };
+      secret = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        description = ''
+          An existing Secret, by name, mounted as files. Nothing here creates one and nothing here
+          can carry its content -- this names it, exactly like `credentials` does.
+        '';
+      };
+      emptyDir = lib.mkOption {
+        type = lib.types.bool;
+        default = false;
+        description = ''
+          A scratch directory that lives and dies with the pod. The right answer for a cache and
+          the wrong one for anything a restart must survive, which is why it is a backing somebody
+          chooses rather than the thing you get by saying nothing.
+        '';
+      };
+      ownership = lib.mkOption {
+        type = lib.types.enum [ "site-curated" "kubelet" ];
+        default = "site-curated";
+        description = ''
+          WHO OWNS THE FILES, which decides whether anything chowns them. `site-curated` -- the
+          default -- means somebody outside the cluster owns this directory and nothing here
+          touches it. `kubelet` renders the resolved identity's fsGroup on the pod.
+
+          THE DEFAULT IS THE LOAD-BEARING HALF. fsGroup makes the kubelet RECURSIVELY CHOWN the
+          volume on EVERY pod start: on a claim nothing else touches that is merely slow, and on a
+          node path somebody curates outside the cluster it destroys ownership set there
+          deliberately. A catalogue that says a directory GROWS refuses it outright.
+        '';
+      };
+      volumeName = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        description = ''
+          What the rendered volume is CALLED, when the live object already calls it something else.
+          Purely a cluster's history: a workload adopted from a hand-written manifest carries
+          whatever name somebody typed, and renaming a volume in place is a rollout rather than an
+          edit. Null takes the catalogue's own name for the directory.
+        '';
       };
       hostPathType = lib.mkOption {
         type = lib.types.enum [
