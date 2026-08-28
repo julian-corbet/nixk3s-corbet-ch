@@ -221,6 +221,9 @@ let
       manifestsOf = r.manifestsOf or ({ w, ... }: w.manifests or [ ]);
       nameOf = r.nameOf or ({ name, w, ... }:
         if (w.objectName or null) != null then w.objectName else name);
+      volumeNameOf = r.volumeNameOf or ({ w, ... }: key:
+        let resolved = w.state.${key}.volumeName or null; in
+        if resolved != null then resolved else key);
       requiredStateKeys = r.requiredStateKeys or ({ entry, ... }: lib.attrNames (entry.state or { }));
       allowedStateKeys = r.allowedStateKeys or ({ entry, ... }: lib.attrNames (entry.state or { }));
       extend = r.extend or ({ app, ... }: app);
@@ -314,11 +317,11 @@ let
 
   # The split in one function: WHERE inside the container comes from the catalogue, WHAT BACKS IT
   # comes from the declaration, and neither side can supply the other's half.
-  # The rendered volume's NAME is the catalogue's name for the directory unless the declaration
-  # says the live object calls it something else -- which only an adoption ever needs.
-  volumeNameOf = w: key:
-    let resolved = w.state.${key}.volumeName or null; in
-    if resolved != null then resolved else key;
+  # The rendered volume's NAME defaults to the catalogue key unless the declaration says the live
+  # object calls it something else. A root may resolve it instead when an established public state
+  # key is semantic rather than a Kubernetes name; every rendered and guarded use goes through the
+  # same resolver below.
+  volumeNameOf = x: key: x.spec.volumeNameOf x key;
 
   # KEYS BOTH SIDES KNOW ABOUT. The guard that catches a directory only one side has is a state
   # assertion; every use of the catalogue that indexes it BY A DECLARATION'S KEY must walk the
@@ -350,7 +353,7 @@ let
       (if backing.emptyDir or false then "emptyDir" else null)
     ] ++ [ null ]);
 
-  stateOf = entry: w:
+  stateOf = x@{ entry, w, ... }:
     lib.mapAttrs'
       (key: backing:
         let ro = entryReadOnly entry.state.${key}; in
@@ -358,7 +361,7 @@ let
           ms = mountsOfEntry entry.state.${key};
           ro' = if ro != null then ro else backing.readOnly or false;
         in
-        lib.nameValuePair (volumeNameOf w key) (
+        lib.nameValuePair (volumeNameOf x key) (
           {
             claim = backing.claim or null;
             hostPath = backing.hostPath or null;
@@ -493,9 +496,9 @@ let
   # Mounts are keyed by the CATALOGUE's name for a directory and must land on the volume this
   # DEPLOYMENT calls it. That coupling is easy to miss and fails loudly but late: a companion
   # mounting a volume the app no longer declares is refused by the grammar, not here.
-  remapMounts = spec: w: ms:
+  remapMounts = x@{ spec, w, ... }: ms:
     if usesCommonOption spec "state" then
-      lib.mapAttrs' (k: v: lib.nameValuePair (if w.state ? ${k} then volumeNameOf w k else k) v) ms
+      lib.mapAttrs' (k: v: lib.nameValuePair (if w.state ? ${k} then volumeNameOf x k else k) v) ms
     else
       ms;
 
@@ -517,7 +520,7 @@ let
       liveness = dropNulls ({ port = c.primaryPort; } // c.liveness);
     };
 
-  companionsOf = spec: entry: w:
+  companionsOf = x@{ spec, entry, w, ... }:
     lib.mapAttrs
       (cname: c:
         {
@@ -526,7 +529,7 @@ let
           args = c.args or [ ];
           env = c.env or { };
           ports = lib.mapAttrs (_: normalisePort) (c.ports or { });
-          mounts = remapMounts spec w (c.mounts or { });
+          mounts = remapMounts x (c.mounts or { });
           security = containerSecurityOf entry w c;
           probes = containerProbesOf c;
           # A companion nobody sized asks for nothing, which renders no `resources` block at all
@@ -538,7 +541,7 @@ let
         })
       (entry.companions or { });
 
-  initOf = spec: entry: w:
+  initOf = x@{ entry, w, ... }:
     map
       (c: {
         inherit (c) name;
@@ -546,7 +549,7 @@ let
         command = c.command or [ ];
         args = c.args or [ ];
         env = c.env or { };
-        mounts = remapMounts spec w (c.mounts or { });
+        mounts = remapMounts x (c.mounts or { });
         security = containerSecurityOf entry w c;
         # NO PORTS AND NO PROBES: the API server rejects a readiness probe on a non-restartable
         # init container, and a port on a process that has already exited is a fact about nothing.
@@ -632,7 +635,7 @@ let
         adopt = w.adopt or false;
         image = imageOf entry w;
         ports = portsOf entry;
-        state = if usesCommonOption spec "state" then stateOf entry w else { };
+        state = if usesCommonOption spec "state" then stateOf x else { };
         secrets = if usesCommonOption spec "credentials" then secretsOf entry w else { };
         # ORDER IS THE POINT. The catalogue's own environment first, then the endpoints of the
         # services this one needs, then its own public URL, then whatever the declaration adds --
@@ -657,8 +660,8 @@ let
         gpu = entry.gpu or false;
         singleWriter = entry.singleWriter or false;
       }
-      // lib.optionalAttrs ((entry.init or [ ]) != [ ]) { init = initOf spec entry w; }
-      // lib.optionalAttrs ((entry.companions or { }) != { }) { companions = companionsOf spec entry w; }
+      // lib.optionalAttrs ((entry.init or [ ]) != [ ]) { init = initOf x; }
+      // lib.optionalAttrs ((entry.companions or { }) != { }) { companions = companionsOf x; }
       // lib.optionalAttrs ((w.replicas or null) != null) { inherit (w) replicas; }
       // lib.optionalAttrs ((w.wake or null) != null) { inherit (w) wake; }
       // identityOf entry w
@@ -781,7 +784,7 @@ let
           # A rename is per directory; two of them landing on one name is one volume where the
           # declaration says two, and the second silently wins.
           assertion =
-            let names = map (k: volumeNameOf w k) (lib.attrNames w.state); in
+            let names = map (k: volumeNameOf x k) (lib.attrNames w.state); in
             lib.length (lib.unique names) == lib.length names;
           message =
             "${namespace}: workload `${name}` renames two directories onto one volume name. One of "
@@ -1051,7 +1054,7 @@ let
               lib.optional
                 (outer != inner
                   && nests outer inner
-                  && volumeNameOf w inner < volumeNameOf w outer)
+                  && volumeNameOf x inner < volumeNameOf x outer)
                 { inherit outer inner; })
             keys)
           keys;
@@ -1094,7 +1097,7 @@ let
                 (outer != inner
                   && nests outer inner
                   && !(inner < outer)
-                  && volumeNameOf w inner < volumeNameOf w outer)
+                  && volumeNameOf x inner < volumeNameOf x outer)
                 { inherit outer inner; })
             keys)
           keys;
@@ -1104,7 +1107,7 @@ let
           when = true;
           message =
             "${namespace}: workload `${name}` renames `${c.inner}` to "
-            + "`${volumeNameOf w c.inner}`, which now sorts before `${volumeNameOf w c.outer}` -- "
+            + "`${volumeNameOf x c.inner}`, which now sorts before `${volumeNameOf x c.outer}` -- "
             + "the volume covering it at ${pathOf c.outer}. Mounts render in that order, so the "
             + "outer one is laid over the inner and its data stops being visible. The names are "
             + "presumably what the live objects already carry, which is why this is not refused.";
@@ -1228,13 +1231,13 @@ let
     (x:
       let
         inherit (x) name w;
-        bad = lib.filter (k: !(isDnsLabel (volumeNameOf w k))) (lib.attrNames w.state);
+        bad = lib.filter (k: !(isDnsLabel (volumeNameOf x k))) (lib.attrNames w.state);
       in
       [{
         assertion = bad == [ ];
         message =
           "${namespace}: workload `${name}` renames "
-          + lib.concatMapStringsSep ", " (k: "`${k}` to `${volumeNameOf w k}`") bad
+          + lib.concatMapStringsSep ", " (k: "`${k}` to `${volumeNameOf x k}`") bad
           + ", which Kubernetes will not accept as a name -- lowercase letters, digits and dashes, "
           + "starting and ending with a letter or a digit. This renders and then fails at apply.";
       }])

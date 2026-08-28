@@ -106,6 +106,7 @@ the resulting YAML.
 | `disabledOptions` / `enabledOptions` | Remove cluster terms structurally per root. Setting a removed term is an unknown-option error. |
 | `namespaceOf`, `projectOf`, `createNamespaceOf`, `nameOf` | Resolve fields that may be derived rather than writable. `nameOf` is the rendered object identity for both grammar apps and direct Applications. |
 | `manifestsOf` | Supplies opaque YAML for a `manifest` entry; defaults to `w.manifests`. |
+| `volumeNameOf context key` | Resolves a public state key to its rendered Kubernetes volume identity. It defaults to the declaration's `volumeName`, then the key. The resolved name is used for app state, companion/init mounts, ordering and collision guards, and DNS-label validation. |
 | `requiredStateKeys`, `allowedStateKeys` | Refine catalogue state per entry/declaration. Both default to every catalogue state key. The factory enforces required ⊆ allowed ⊆ catalogued and required ⊆ declared ⊆ allowed. |
 | `extend`, `extendManifest` | Add the genuinely domain-specific tail to the typed or manifest result. |
 | `extraOptions` | Extra declaration options for this root. |
@@ -168,7 +169,7 @@ platform namespace.
 ### Callback phases
 
 `kind`, `enableByDefault`, and `defaults` participate in resolving the declaration; the field
-resolvers (`namespaceOf`, `projectOf`, `createNamespaceOf`, `nameOf`, `manifestsOf`,
+resolvers (`namespaceOf`, `projectOf`, `createNamespaceOf`, `nameOf`, `manifestsOf`, `volumeNameOf`,
 `requiredStateKeys`, and `allowedStateKeys`) participate in constructing or classifying its output.
 These callbacks may read catalogue knowledge, platform values, and already-declared peers through
 `consumer`. They must not read the rendered reports or the `moduleConfig.applications` output they

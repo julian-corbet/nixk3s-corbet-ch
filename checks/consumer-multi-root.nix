@@ -124,6 +124,77 @@ let
     ];
   }).config;
 
+  # Some established consumers use semantic camelCase state keys in their public declaration
+  # contract even though a Kubernetes volume name must be a DNS label. The root resolver keeps
+  # those two identities separate: declarations stay source-compatible while every rendered use
+  # of the volume takes the catalogue's explicit Kubernetes name.
+  volumeCatalogue.legacy = {
+    image = "registry.example.com/example-org/legacy";
+    ports = { };
+    primaryPort = null;
+    state = {
+      legacyData = "/srv/legacy/data";
+      cacheData = "/srv/legacy/cache";
+    };
+    volumeNames = {
+      legacyData = "legacy-data";
+      cacheData = "cache-data";
+    };
+    companions.reader = {
+      image = null;
+      ports = { };
+      primaryPort = null;
+      mounts.cacheData = [{ mountPath = "/srv/reader/cache"; }];
+    };
+    init = [{
+      name = "seed";
+      image = null;
+      command = [ "sh" "-c" ];
+      args = [ "test -d /srv/seed/data" ];
+      mounts.legacyData = [{ mountPath = "/srv/seed/data"; }];
+    }];
+  };
+
+  catalogueVolumeNameOf = { entry, ... }: key: entry.volumeNames.${key} or key;
+
+  mkVolumeConsumer = resolver: mkConsumerModule {
+    namespace = "nixvolume";
+    roots.workloads = {
+      catalogue = volumeCatalogue;
+      selector = "service";
+      volumeNameOf = resolver;
+    };
+  };
+
+  volumeValues = {
+    nixidy.target.repository = "https://example.com/example-org/example-gitops.git";
+    nixidy.target.branch = "main";
+    nixvolume = {
+      clusterPlatform = {
+        namespace = "example-volume";
+        project = "example";
+      };
+      workloads.one = {
+        service = "legacy";
+        version = "1.0.0";
+        state = {
+          legacyData.hostPath = "/example/legacy/data";
+          cacheData.hostPath = "/example/legacy/cache";
+        };
+      };
+    };
+  };
+
+  mkVolumeEnv = resolver: v: nixidy.lib.mkEnv {
+    inherit pkgs;
+    modules = [ appsModule (mkVolumeConsumer resolver) v ];
+  };
+
+  volumeRenders = resolver:
+    (builtins.tryEval (builtins.seq (mkVolumeEnv resolver volumeValues).environmentPackage.drvPath true)).success;
+
+  volumeCfg = (mkVolumeEnv catalogueVolumeNameOf volumeValues).config;
+
   with' = f: lib.recursiveUpdate base f;
   configOf = v: (mkEnv v).config;
   cfg = configOf base;
@@ -198,6 +269,23 @@ let
       && rejectsOptionPath [ ]
       && rejectsOptionPath [ "nixinvalidpath" "" ]
       && rejectsOptionPath [ "nixinvalidpath" 1 ];
+
+    "a root resolves legacy camelCase state keys to explicit Kubernetes volume names everywhere" =
+      volumeRenders catalogueVolumeNameOf
+      && volumeCfg.nixvolume.workloads.one.state ? legacyData
+      && volumeCfg.nixvolume.workloads.one.state ? cacheData
+      && !(volumeCfg.nixk3s.apps.one.state ? legacyData)
+      && !(volumeCfg.nixk3s.apps.one.state ? cacheData)
+      && volumeCfg.nixk3s.apps.one.state."legacy-data".hostPath == "/example/legacy/data"
+      && volumeCfg.nixk3s.apps.one.state."cache-data".hostPath == "/example/legacy/cache"
+      && builtins.hasAttr "cache-data" volumeCfg.nixk3s.apps.one.companions.reader.mounts
+      && builtins.hasAttr "legacy-data" (lib.head volumeCfg.nixk3s.apps.one.init).mounts;
+
+    "an invalid root-resolved volume name is still refused by the shared DNS guard" =
+      failsWithUsing (mkVolumeEnv (_context: _key: "Not_A_Label")) "will not accept as a name" volumeValues;
+
+    "two root-resolved state keys colliding on one volume name are refused centrally" =
+      failsWithUsing (mkVolumeEnv (_context: _key: "same")) "onto one volume name" volumeValues;
 
     "entries from two roots reach the app grammar" =
       cfg.nixmulti.renderedByGrammar == [ "agent" "web" ]
