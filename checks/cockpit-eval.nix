@@ -53,6 +53,19 @@ let
   warnsWith = infix: v:
     lib.any (w: w.when && lib.hasInfix infix w.message) (mkEnv v).config.nixidy.warnings;
 
+  failureCountWith = infix: v:
+    let
+      result = builtins.tryEval (lib.length (lib.filter
+        (a: !a.assertion && lib.hasInfix infix a.message)
+        (mkEnv v).config.nixidy.assertions));
+    in
+    if result.success then result.value else -1;
+
+  warningCountWith = infix: v:
+    lib.length (lib.filter
+      (w: w.when && lib.hasInfix infix w.message)
+      (mkEnv v).config.nixidy.warnings);
+
   # A surface with nothing declared at all, to prove the module is inert until something asks.
   emptyCfg = (mkEnv {
     nixidy.target.repository = "https://example.com/example-org/example-gitops.git";
@@ -109,6 +122,66 @@ let
     };
   };
 
+  overriddenPlatform = with' {
+    nixk3s.cockpit = {
+      origin = "example-cockpit-origin";
+      project = "example-cockpit-project";
+    };
+  };
+  overriddenPlatformCfg = (mkEnv overriddenPlatform).config;
+
+  unslotted = secondSurface {
+    namespace = "example-unslotted-cockpit";
+    slot = null;
+  };
+  unslottedCfg = (mkEnv unslotted).config;
+
+  parkedWithSlot = with' {
+    nixk3s.cockpit.surfaces.example-parked-portal.slot = 99;
+  };
+  parkedWithSlotCfg = (mkEnv parkedWithSlot).config;
+
+  claimBacked = with' {
+    nixk3s.cockpit.surfaces.example-portal.state.appdata = {
+      hostPath = lib.mkForce null;
+      claim = "example-portal-data";
+    };
+  };
+  claimBackedCfg = (mkEnv claimBacked).config;
+
+  factoryOnlyTerms = [
+    { path = [ "manifests" ]; value = [ ]; }
+    { path = [ "companionImages" ]; value.helper = "example.invalid/helper:1"; }
+    { path = [ "companionResources" ]; value.helper.cpuRequest = "1m"; }
+    { path = [ "initImages" ]; value.helper = "example.invalid/helper:1"; }
+    { path = [ "objectName" ]; value = "example-portal"; }
+    { path = [ "replicas" ]; value = 1; }
+    { path = [ "harden" ]; value = true; }
+    { path = [ "resources" ]; value.cpuRequest = "1m"; }
+    { path = [ "credentials" ]; value.secret = "example-secret"; }
+    { path = [ "requires" ]; value.example.endpoint = "https://example.invalid"; }
+    { path = [ "publicUrl" ]; value = "https://example.invalid"; }
+    { path = [ "identity" ]; value = "example"; }
+    { path = [ "args" ]; value = [ ]; }
+  ];
+
+  widenedStateTerms = [
+    { path = [ "configMap" ]; value = "example-config"; }
+    { path = [ "secret" ]; value = "example-secret"; }
+    { path = [ "emptyDir" ]; value = true; }
+    { path = [ "ownership" ]; value = "site-curated"; }
+    { path = [ "volumeName" ]; value = "appdata"; }
+    { path = [ "readOnly" ]; value = false; }
+  ];
+
+  surfaceTermConfig = term: lib.setAttrByPath
+    ([ "nixk3s" "cockpit" "surfaces" "example-portal" ] ++ term.path)
+    term.value;
+
+  stateTermConfig = term: lib.setAttrByPath
+    ([ "nixk3s" "cockpit" "surfaces" "example-portal" "state" "appdata" ] ++ term.path)
+    term.value;
+
   results = {
     # ── The control, and the floor ────────────────────────────────────────────────────────────
     "the example surface renders -- without this every refusal below could pass for the wrong reason" =
@@ -119,6 +192,17 @@ let
 
     "a parked declaration is a declaration that renders nothing" =
       lib.attrNames goodCfg.nixk3s.apps == [ "example-portal" ];
+
+    "the factory preserves the exact flat cockpit platform schema" =
+      goodCfg.nixk3s.cockpit.origin == "nixk3s"
+      && goodCfg.nixk3s.cockpit.project == "management"
+      && !(goodCfg.nixk3s.cockpit ? clusterPlatform)
+      && !(goodCfg.nixk3s.cockpit ? platform);
+
+    "flat origin and project overrides remain the renderer's inputs" =
+      overriddenPlatformCfg.nixk3s.apps.example-portal.origin == "example-cockpit-origin"
+      && overriddenPlatformCfg.nixk3s.cockpit.surfaces.example-parked-portal.project
+        == "example-cockpit-project";
 
     # ── What the module IS: a translator over a grammar it carries ────────────────────────────
     "the cockpit alone composes the grammar it defines into, with nothing else in the render" =
@@ -151,6 +235,7 @@ let
       goodCfg.nixk3s.apps.example-portal.probes.startup.path == "/"
       && goodCfg.nixk3s.apps.example-portal.probes.startup.port == "http"
       && goodCfg.nixk3s.apps.example-portal.probes.startup.failureThreshold == 40
+      && goodCfg.nixk3s.apps.example-portal.probes.startup.initialDelaySeconds == 0
       && goodCfg.nixk3s.apps.example-portal.probes.readiness.periodSeconds == 5
       && goodCfg.nixk3s.apps.example-portal.probes.liveness == null;
 
@@ -165,6 +250,21 @@ let
       goodCfg.nixk3s.apps.example-portal.origin == "nixk3s"
       && goodCfg.nixk3s.apps.example-portal.slot == 33
       && goodCfg.nixk3s.cockpit.slots == { example-portal = 33; };
+
+    "legacy and factory reports describe the same enabled declarations" =
+      goodCfg.nixk3s.cockpit.clusterSlots == goodCfg.nixk3s.cockpit.slots
+      && goodCfg.nixk3s.cockpit.renderedByGrammar == [ "example-portal" ]
+      && goodCfg.nixk3s.cockpit.renderedDirectly == [ ]
+      && goodCfg.nixk3s.cockpit.notRendered == [ ];
+
+    "a parked slot is absent from every occupancy and rendering report" =
+      parkedWithSlotCfg.nixk3s.cockpit.slots == { example-portal = 33; }
+      && parkedWithSlotCfg.nixk3s.cockpit.clusterSlots == { example-portal = 33; }
+      && parkedWithSlotCfg.nixk3s.cockpit.renderedByGrammar == [ "example-portal" ];
+
+    "an enabled unslotted surface receives no addressing terms" =
+      unslottedCfg.nixk3s.apps.example-parked-portal.origin == null
+      && unslottedCfg.nixk3s.apps.example-parked-portal.slot == null;
 
     # ── Unwritable, not merely refused ────────────────────────────────────────────────────────
     "a face the catalogue does not hold is not a value this option has" =
@@ -184,6 +284,12 @@ let
         nixk3s.cockpit.surfaces.x = { face = "homarr"; version = "0.0.0"; };
       };
 
+    "factory-only workload terms remain structurally unwritable" =
+      lib.all (term: !renders (with' (surfaceTermConfig term))) factoryOnlyTerms;
+
+    "the widened common state fields remain structurally unwritable" =
+      lib.all (term: !renders (with' (stateTermConfig term))) widenedStateTerms;
+
     # ── The guards, each with its message asserted ────────────────────────────────────────────
     "backing a directory the face does not write is refused" =
       failsWith "must back every directory it writes"
@@ -196,8 +302,20 @@ let
         });
 
     "a directory backed by both a claim and a node path is refused" =
-      failsWith "EITHER an existing claim"
+      failsWith "EXACTLY ONE of a claim"
         (with' { nixk3s.cockpit.surfaces.example-portal.state.appdata.claim = "example-claim"; });
+
+    "a directory backed by neither a claim nor a node path is refused centrally" =
+      failsWith "EXACTLY ONE of a claim"
+        (with' {
+          nixk3s.cockpit.surfaces.example-portal.state.appdata.hostPath = lib.mkForce null;
+        });
+
+    "claim-backed state remains writable and reaches the grammar" =
+      renders claimBacked
+      && claimBackedCfg.nixk3s.apps.example-portal.state.appdata.claim
+        == "example-portal-data"
+      && claimBackedCfg.nixk3s.apps.example-portal.state.appdata.hostPath == null;
 
     "a directory that must already hold data may not be backed by one that gets created" =
       failsWith "must already hold data"
@@ -290,12 +408,18 @@ let
         });
 
     "two surfaces anchoring one namespace is refused" =
-      failsWith "Exactly one surface may create a namespace"
+      failsWith "anchored by 2 workloads"
         (secondSurface { namespace = "example-cockpit"; createNamespace = true; });
 
     "two surfaces on one position is refused" =
-      failsWith "is claimed by 2 surfaces"
+      failsWith "slot 33 is claimed by 2 workloads"
         (secondSurface { namespace = "example-parked-cockpit"; slot = 33; });
+
+    "namespace and slot collisions each produce one central diagnostic" =
+      failureCountWith "anchored by 2 workloads"
+        (secondSurface { namespace = "example-cockpit"; createNamespace = true; }) == 1
+      && failureCountWith "slot 33 is claimed by 2 workloads"
+        (secondSurface { namespace = "example-parked-cockpit"; slot = 33; }) == 1;
 
     "claiming a position with no band model in the render is refused, by name" =
       failsWithIn mkEnvNoBandModel "the band model is not part of this render"
@@ -314,6 +438,21 @@ let
         (lib.recursiveUpdate base {
           nixk3s.cockpit.surfaces.example-portal.env = lib.mkForce { TZ = "UTC"; };
         });
+
+    "the valid control has no active migration-only warning" =
+      lib.filter (warning: warning.when) goodCfg.nixidy.warnings == [ ];
+
+    "each cockpit warning is emitted exactly once" =
+      warningCountWith "nothing brings it back"
+        (lib.recursiveUpdate base {
+          nixk3s.cockpit.surfaces.example-portal.wake = lib.mkForce null;
+        }) == 1
+      && warningCountWith "how it authenticates anybody"
+        (lib.recursiveUpdate base {
+          nixk3s.cockpit.surfaces.example-portal.env = lib.mkForce { TZ = "UTC"; };
+        }) == 1
+      && warningCountWith "starts against an EMPTY `appdata`"
+        (acceptedEmptyStart "the live volume already carries this backing") == 1;
   };
 
   failed = lib.filter (n: !results.${n}) (lib.attrNames results);

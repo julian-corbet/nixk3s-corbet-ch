@@ -57,54 +57,29 @@
 # yet, and only where the refusal would otherwise have fired. It then warns at every render and
 # appears in `nixk3s.cockpit.emptyStartAccepted`, because the alternative is not a safer cluster:
 # it is the same live object declared outside this module, where nothing counts it at all.
-{ config, lib, ... }:
+{ config, lib, options, ... }:
 
 let
   cfg = config.nixk3s.cockpit;
-  catalogue = (import ../../lib/cockpit.nix { }).faces;
+  sourceCatalogue = (import ../../lib/cockpit.nix { }).faces;
 
-  declared = lib.filterAttrs (_: s: s.enable) cfg.surfaces;
-  surfaces = lib.mapAttrsToList (name: s: { inherit name s; face = catalogue.${s.face}; }) declared;
+  # The catalogue's public spelling stays `path`. The common renderer calls the same fact
+  # `mountPath`, so adapt it only in the private record handed to the factory.
+  catalogue = lib.mapAttrs
+    (_: face: face // {
+      state = lib.mapAttrs (_: state: state // { mountPath = state.path; }) face.state;
+    })
+    sourceCatalogue;
+
+  surfacesOf = workloads: map
+    (x: { inherit (x) name; s = x.w; face = x.entry; })
+    workloads;
 
   # THE BAND MODEL IS A SIBLING, not a dependency. Its terms (`origin`, `slot`) are options it adds
   # to the grammar's apps, so defining them into a render that does not compose it is an eval error
   # about an option that does not exist. Detected rather than assumed, so a surface that claims a
   # position without it gets a sentence naming the missing module instead.
-  addressingComposed = (config.nixk3s.addressing or null) != null;
-
-  # A whole reference wins over a repository plus a tag, which is what pinning by digest looks like.
-  # The catalogue carries neither: a version is a deployment's choice and a digest is one
-  # deployment's proof of what it is running.
-  imageOf = face: s: if s.image != null then s.image else "${face.image}:${s.version}";
-
-  portsOf = face: lib.mapAttrs (_: number: { inherit number; }) face.ports;
-
-  # The split in one function: WHERE inside the container comes from the catalogue, WHAT BACKS IT
-  # comes from the declaration, and neither side can supply the other's half. `hostPathType`
-  # travels only with a node path — the grammar refuses it beside any other backing, because it
-  # describes a directory on a node and nothing else.
-  stateOf = face: s:
-    lib.mapAttrs
-      (key: backing:
-        { mountPath = face.state.${key}.path; inherit (backing) claim hostPath; }
-        // lib.optionalAttrs (backing.hostPath != null) { inherit (backing) hostPathType; })
-      s.state;
-
-  # THE SHAPE FROM THE CATALOGUE, THE BUDGET FROM THE DECLARATION, aimed at the port the catalogue
-  # records. Which probes exist and what answers them is true of the software; how long each may
-  # take is a stopwatch held against one cluster's disks, so neither side can supply the other's
-  # half. A probe the catalogue leaves out is not rendered here at all -- and one it REFUSES
-  # (`probesRefused`) cannot be budgeted into existence, which is a guard rather than a filter.
-  probesOf = face: s:
-    lib.mapAttrs
-      (name: shape:
-        let budget = s.probes.${name} or null; in
-        { port = face.primaryPort; }
-        // shape
-        // lib.optionalAttrs (budget != null) {
-          inherit (budget) initialDelaySeconds periodSeconds failureThreshold timeoutSeconds;
-        })
-      face.probes;
+  addressingComposed = lib.hasAttrByPath [ "nixk3s" "addressing" "reservations" ] options;
 
   # The uid the image drops to, in the spelling the image reads it in. The names are knowledge; the
   # numbers are the consumer's, and they only exist here as two integers on their way into an
@@ -129,56 +104,29 @@ let
 
   secretEnvNamesOf = s: lib.concatMap (sec: lib.attrNames sec.env) (lib.attrValues s.secrets);
 
-  mkApp = x:
-    let inherit (x) face s; in
-    {
-      inherit (s) namespace createNamespace project exposure scaling adopt;
-      inherit (face) identity security;
-      image = imageOf face s;
-      ports = portsOf face;
-      state = stateOf face s;
-      secrets = secretsOf s;
-      env = face.env // identityEnvOf face s // s.env;
-      probes = probesOf face s;
+  extendApp = { entry, w, app, platform, ... }:
+    removeAttrs app [ "origin" "slot" ]
+    // {
+      inherit (entry) identity security;
+      secrets = secretsOf w;
+      env = entry.env // identityEnvOf entry w // w.env;
     }
-    // lib.optionalAttrs (s.wake != null) { inherit (s) wake; }
-    // lib.optionalAttrs (s.slot != null && addressingComposed) {
-      inherit (cfg) origin;
-      inherit (s) slot;
+    // lib.optionalAttrs (w.slot != null && addressingComposed) {
+      inherit (platform) origin;
+      inherit (w) slot;
     };
 
   ## ---------------------------------------------------------------------
   ## Assertions
   ## ---------------------------------------------------------------------
 
-  stateAssertions = lib.concatMap
+  stateAssertions = surfaces: lib.concatMap
     (x:
       let inherit (x) name s face; in
-      [
-        {
-          assertion = lib.attrNames s.state == lib.attrNames face.state;
-          message =
-            "nixk3s.cockpit: surface `${name}` must back every directory it writes, and backs "
-            + (if s.state == { } then "none" else lib.concatMapStringsSep ", " (k: "`${k}`") (lib.attrNames s.state))
-            + ". It writes: "
-            + (if face.state == { } then "nothing"
-            else lib.concatStringsSep ", " (lib.mapAttrsToList (k: v: "`${k}` at ${v.path}") face.state))
-            + ".";
-        }
-        {
-          assertion = lib.all
-            (backing: (backing.claim == null) != (backing.hostPath == null))
-            (lib.attrValues s.state);
-          message =
-            "nixk3s.cockpit: surface `${name}` must back each directory with EITHER an existing claim "
-            + "OR a node path, never both and never neither. A directory with no backing is the pod's "
-            + "own filesystem, which is discarded on the restart this face's own database guarantees.";
-        }
-      ]
       # THE MUST-EXIST GUARD, quoting the catalogue's own reason back rather than restating it. A
       # backing that creates the directory when it is missing does not turn a lost volume into a
       # failed start; it turns it into a healthy pod with nothing in it.
-      ++ lib.mapAttrsToList
+      lib.mapAttrsToList
         (key: backing: {
           assertion =
             !(face.state ? ${key})
@@ -231,7 +179,7 @@ let
     surfaces;
 
   # ── PROBES: the catalogue names them, the declaration budgets them ────────────────────────────
-  probeAssertions = lib.concatMap
+  probeAssertions = surfaces: lib.concatMap
     (x:
       let
         inherit (x) name s face;
@@ -264,7 +212,7 @@ let
         refused)
     surfaces;
 
-  envAssertions = lib.concatMap
+  envAssertions = surfaces: lib.concatMap
     (x:
       let
         inherit (x) name s face;
@@ -303,7 +251,7 @@ let
       ])
     surfaces;
 
-  identityAssertions = lib.concatMap
+  identityAssertions = surfaces: lib.concatMap
     (x:
       let inherit (x) name s face; in
       [
@@ -327,39 +275,11 @@ let
       ])
     surfaces;
 
-  # A namespace outlives every workload in it, so exactly one thing may own it. Two anchors is not a
-  # merge, it is two Namespace objects Argo CD fights over.
-  anchorAssertions =
-    let
-      anchors = lib.filter (x: x.s.createNamespace) surfaces;
-      byNs = lib.groupBy (x: x.s.namespace) anchors;
-    in
-    lib.mapAttrsToList
-      (ns: xs: {
-        assertion = lib.length xs == 1;
-        message =
-          "nixk3s.cockpit: namespace `${ns}` is anchored by ${toString (lib.length xs)} surfaces ("
-          + lib.concatMapStringsSep ", " (x: "`${x.name}`") xs
-          + "). Exactly one surface may create a namespace.";
-      })
-      byNs;
-
-  slotAssertions =
+  addressingAssertions = surfaces:
     let
       claimed = lib.filter (x: x.s.slot != null) surfaces;
-      bySlot = lib.groupBy (x: toString x.s.slot) claimed;
     in
-    lib.mapAttrsToList
-      (slot: xs: {
-        assertion = lib.length xs == 1;
-        message =
-          "nixk3s.cockpit: slot ${slot} is claimed by ${toString (lib.length xs)} surfaces ("
-          + lib.concatMapStringsSep ", " (x: "`${x.name}`") xs
-          + "). A slot is one identity in several address spaces at once; two surfaces on one number "
-          + "is two surfaces on one address.";
-      })
-      bySlot
-    ++ map
+    map
       (x: {
         assertion = addressingComposed;
         message =
@@ -392,7 +312,7 @@ let
       })
       s.state;
 
-  warnings = lib.concatMap
+  warnings = surfaces: lib.concatMap
     (x:
       let inherit (x) name s face; in
       emptyStartWarnings x
@@ -422,8 +342,7 @@ let
   ## The declaration surface
   ## ---------------------------------------------------------------------
 
-  surfaceOptions = { ... }: {
-    options = {
+  surfaceOptions = {
       enable = lib.mkOption {
         type = lib.types.bool;
         default = true;
@@ -702,15 +621,9 @@ let
           };
         });
       };
-    };
   };
-in
-{
-  # The grammar, imported by the module that translates INTO it. The direction is the whole design:
-  # this needs the grammar and the grammar must never need this.
-  imports = [ ../apps ];
 
-  options.nixk3s.cockpit = {
+  namespaceOptions = {
     origin = lib.mkOption {
       type = lib.types.str;
       default = "nixk3s";
@@ -733,42 +646,9 @@ in
       '';
     };
 
-    surfaces = lib.mkOption {
-      default = { };
-      description = ''
-        The platform's own faces that run in this cluster, keyed by a name of your choosing.
-
-        THE ENUM IS THE BOUNDARY. It is built from `lib/cockpit.nix`, so a workload this repository
-        does not catalogue is not a refused value here — it is not a value. What may go into that
-        catalogue is one test: a face belongs only if it would still be worth running on a cluster
-        with no apps in it. Everything else is an app somebody HAS, and the grammar underneath is
-        deliberately incurious about those.
-      '';
-      example = lib.literalExpression ''
-        {
-          example-portal = {
-            face = "homarr";
-            version = "0.0.0";
-            namespace = "example-cockpit";
-            createNamespace = true;
-            exposure = "nb";
-            slot = 42;
-            posixIdentity = { uid = 4242; gid = 4242; };
-            state.appdata.hostPath = "/example/state/example-portal";
-            secrets.example-portal-secrets.env.SECRET_ENCRYPTION_KEY = "encryption-key";
-          };
-        }
-      '';
-      type = lib.types.attrsOf (lib.types.submodule surfaceOptions);
-    };
-
     emptyStartAccepted = lib.mkOption {
       type = lib.types.listOf lib.types.str;
       readOnly = true;
-      default = lib.concatMap
-        (x: lib.mapAttrsToList (key: _: "${x.name}.${key}")
-          (lib.filterAttrs (_: b: b.emptyStartAccepted != null) x.s.state))
-        surfaces;
       defaultText = lib.literalExpression
         "every `<surface>.<directory>` whose backing is allowed to create it when it is missing";
       description = ''
@@ -786,8 +666,6 @@ in
     slots = lib.mkOption {
       type = lib.types.attrsOf lib.types.ints.unsigned;
       readOnly = true;
-      default = lib.listToAttrs
-        (map (x: lib.nameValuePair x.name x.s.slot) (lib.filter (x: x.s.slot != null) surfaces));
       defaultText = lib.literalExpression "every rendered surface that claims a slot";
       description = ''
         surface -> the position it claims. Nothing is rendered from it here: what an address looks
@@ -796,11 +674,91 @@ in
     };
   };
 
-  config = {
-    nixk3s.apps = lib.listToAttrs (map (x: lib.nameValuePair x.name (mkApp x)) surfaces);
-    nixidy.assertions =
-      stateAssertions ++ probeAssertions ++ envAssertions ++ identityAssertions ++ anchorAssertions
-      ++ slotAssertions;
-    nixidy.warnings = warnings;
+  surfaceDescription = ''
+    The platform's own faces that run in this cluster, keyed by a name of your choosing.
+
+    THE ENUM IS THE BOUNDARY. It is built from `lib/cockpit.nix`, so a workload this repository
+    does not catalogue is not a refused value here — it is not a value. What may go into that
+    catalogue is one test: a face belongs only if it would still be worth running on a cluster
+    with no apps in it. Everything else is an app somebody HAS, and the grammar underneath is
+    deliberately incurious about those.
+  '';
+
+  surfaceExample = lib.literalExpression ''
+    {
+      example-portal = {
+        face = "homarr";
+        version = "0.0.0";
+        namespace = "example-cockpit";
+        createNamespace = true;
+        exposure = "nb";
+        slot = 42;
+        posixIdentity = { uid = 4242; gid = 4242; };
+        state.appdata.hostPath = "/example/state/example-portal";
+        secrets.example-portal-secrets.env.SECRET_ENCRYPTION_KEY = "encryption-key";
+      };
+    }
+  '';
+
+  enabledOptions = [
+    "version"
+    "createNamespace"
+    "slot"
+    "exposure"
+    "scaling"
+    "adopt"
+    "state"
+    "probes"
+    "env"
+  ];
+
+  factoryModule = (import ../../lib/consumer.nix { inherit lib; }) {
+    namespace = "nixk3s.cockpit";
+    optionPath = [ "nixk3s" "cockpit" ];
+    publishPlatformOptions = false;
+    platformOf = { consumer, ... }: {
+      inherit (consumer) project origin;
+    };
+    originOptionPath = [ "nixk3s" "cockpit" "origin" ];
+    extraNamespaceOptions = namespaceOptions;
+
+    roots.surfaces = {
+      inherit catalogue enabledOptions;
+      selector = "face";
+      selectorDescription = surfaceOptions.face.description;
+      extraOptions = builtins.removeAttrs surfaceOptions [ "face" ];
+      extend = extendApp;
+      description = surfaceDescription;
+      example = surfaceExample;
+
+      # State shape/backing, anchors, slot collisions, and object names are now shared. These are
+      # the cockpit catalogue's own must-exist, probe, secret, identity, and composition rules.
+      assertions = workloads:
+        let surfaces = surfacesOf workloads; in
+        stateAssertions surfaces
+        ++ probeAssertions surfaces
+        ++ envAssertions surfaces
+        ++ identityAssertions surfaces
+        ++ addressingAssertions surfaces;
+
+      warnings = workloads: warnings (surfacesOf workloads);
+    };
+
+    extraConfig = workloads:
+      let surfaces = surfacesOf workloads; in {
+        nixk3s.cockpit.emptyStartAccepted = lib.mkOptionDefault (lib.concatMap
+          (x: lib.mapAttrsToList (key: _: "${x.name}.${key}")
+            (lib.filterAttrs (_: backing: backing.emptyStartAccepted != null) x.s.state))
+          surfaces);
+        nixk3s.cockpit.slots = lib.mkOptionDefault (lib.listToAttrs
+          (map
+            (x: lib.nameValuePair x.name x.s.slot)
+            (lib.filter (x: x.s.slot != null) surfaces)));
+      };
   };
+in
+{
+  # The grammar, imported by the module that translates INTO it. The direction is the whole design:
+  # this needs the grammar and the grammar must never need this.
+  imports = [ ../apps factoryModule ];
 }
