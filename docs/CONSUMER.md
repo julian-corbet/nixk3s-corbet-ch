@@ -19,6 +19,22 @@ an entry with `app`; enabled declarations render through the app grammar. `root`
 `platformOption`, `extraOptions`, `extend`, and the assertion/warning hooks remain available for a
 single unusual catalogue.
 
+`namespace` is also the stable label used in diagnostics. When an established public schema is
+nested, `optionPath` places the factory options there without a mirror module or a new sibling
+surface:
+
+```nix
+nixk3s.lib.mkConsumerModule {
+  namespace = "nixoffice";
+  optionPath = [ "nixoffice" "cluster" ];
+  catalogue = self.lib.applications;
+}
+```
+
+This declares `nixoffice.cluster.clusterPlatform` and `nixoffice.cluster.applications`, while
+diagnostics still begin with `nixoffice:`. `optionPath` defaults to `[ namespace ]` and must be a
+non-empty list of non-empty strings.
+
 ## Several roots and mixed delivery kinds
 
 A database tier or CI platform is not one homogeneous table. An instance can be a typed workload
@@ -97,7 +113,10 @@ the resulting YAML.
 
 `extraOptions` overlays the common option surface for two deliberate, distinct cases. Overlaying an
 ENABLED common name refines its module contract while keeping the shared renderer and guards; for
-example, a root may narrow nullable `version` to a required string. Overlaying a STRUCTURALLY
+example, a root may narrow nullable `version` to a required string, or replace `state` with an
+existing claim/hostPath-only public subtype. The renderer treats omitted optional backing fields as
+their common defaults, so narrowing the writable state schema does not surrender the central state
+guards. Overlaying a STRUCTURALLY
 DISABLED common name replaces its shape and transfers responsibility to that root. The factory
 uses the original enabled/disabled marker—not the final overlaid option set—to distinguish them.
 
@@ -169,8 +188,8 @@ namespace anchors are refused centrally. `extraPlatformOptions`, `extraNamespace
 result is deep-merged as a module definition, so a sibling `nixk3s.*` subtree cannot replace
 `nixk3s.apps`.
 
-When `${namespace}.${platformOption}.origin` is set, every slot held by a `manifest` or `reference`
-entry is also emitted as `nixk3s.addressing.reservations.<name>`. Addressing already counts slots on
+When the `${platformOption}.origin` field at `optionPath` is set, every slot held by a `manifest`
+or `reference` entry is also emitted as `nixk3s.addressing.reservations.<name>`. Addressing already counts slots on
 grammar apps; the reservation keeps a below-grammar holder from making a live number appear free.
 Compose the addressing module whenever an origin is set, just as the single-catalogue form already
 requires for grammar-app slots.

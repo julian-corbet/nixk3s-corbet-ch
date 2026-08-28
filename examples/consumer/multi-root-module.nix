@@ -23,6 +23,26 @@ let
     };
   };
 
+  # A consumer may already have a deliberately smaller public state vocabulary. Overlaying this
+  # on the still-enabled common `state` term keeps the central renderer and guards while proving
+  # they do not rely on the wider backing record merely being writable.
+  narrowBackingType = lib.types.submodule {
+    options = {
+      claim = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+      };
+      hostPath = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+      };
+      hostPathType = lib.mkOption {
+        type = lib.types.enum [ "Directory" "DirectoryOrCreate" ];
+        default = "Directory";
+      };
+    };
+  };
+
   legacyResourceType = lib.types.submodule {
     options = {
       requests = lib.mkOption {
@@ -172,6 +192,11 @@ in
             type = lib.types.enum [ "ordinary" "archive" ];
             default = "ordinary";
             description = "Whether this declaration enables the catalogue's conditional archive.";
+          };
+          extraOptions.state = lib.mkOption {
+            type = lib.types.attrsOf narrowBackingType;
+            default = { };
+            description = "The consumer's intentionally narrow claim-or-hostPath backing surface.";
           };
           manifestsOf = { w, ... }: w.manifests ++ w.generatedManifests;
           requiredStateKeys = { entry, ... }:

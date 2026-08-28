@@ -77,6 +77,53 @@ let
       }).config.nixk3s.apps.one.image
       true)).success;
 
+  rejectsOptionPath = optionPath:
+    let
+      module = mkConsumerModule {
+        namespace = "nixinvalidpath";
+        inherit optionPath;
+        catalogue = selectorCatalogue;
+        selector = "service";
+      };
+      result = builtins.tryEval (builtins.deepSeq
+        (module { config = { }; inherit lib; options = { }; }).options
+        true);
+    in
+    !result.success;
+
+  nestedConsumerModule = mkConsumerModule {
+    namespace = "nixnested";
+    optionPath = [ "nixnested" "cluster" ];
+    catalogue = selectorCatalogue;
+    selector = "service";
+  };
+
+  nestedCfg = (nixidy.lib.mkEnv {
+    inherit pkgs;
+    modules = [
+      appsModule
+      nestedConsumerModule
+      {
+        options.nixnested.hostSurface = lib.mkOption { type = lib.types.str; };
+        config.nixnested.hostSurface = "preserved sibling";
+      }
+      {
+        nixidy.target.repository = "https://example.com/example-org/example-gitops.git";
+        nixidy.target.branch = "main";
+        nixnested.cluster = {
+          clusterPlatform = {
+            namespace = "example-nested";
+            project = "example";
+          };
+          applications.one = {
+            service = "only";
+            version = "1.0.0";
+          };
+        };
+      }
+    ];
+  }).config;
+
   with' = f: lib.recursiveUpdate base f;
   configOf = v: (mkEnv v).config;
   cfg = configOf base;
@@ -138,6 +185,19 @@ let
           extraOptions.service = lib.mkOption { type = lib.types.str; };
         })
         (selectorValues "nixselectorextra" "service");
+
+    "optionPath preserves an existing nested public option tree without an adapter" =
+      nestedCfg.nixnested.cluster.applications.one.service == "only"
+      && !(nestedCfg.nixnested ? applications)
+      && nestedCfg.nixnested.hostSurface == "preserved sibling"
+      && nestedCfg.nixk3s.apps.one.image
+        == "registry.example.com/example-org/selector-fixture:1.0.0";
+
+    "optionPath rejects shapes that cannot name a module option tree" =
+      rejectsOptionPath "nixinvalidpath"
+      && rejectsOptionPath [ ]
+      && rejectsOptionPath [ "nixinvalidpath" "" ]
+      && rejectsOptionPath [ "nixinvalidpath" 1 ];
 
     "entries from two roots reach the app grammar" =
       cfg.nixmulti.renderedByGrammar == [ "agent" "web" ]
@@ -217,6 +277,11 @@ let
     "required state remains required when other catalogue state is optional" =
       failsWith "marks required, and is missing `data`"
         (with' { nixmulti.services.web.state = lib.mkForce { }; });
+
+    "an enabled common state term may narrow its public backing schema" =
+      cfg.nixk3s.apps.web.state.data.hostPath == "/example/state/web"
+      && cfg.nixk3s.apps.web.state.data.ownership == "site-curated"
+      && !renders (with' { nixmulti.services.web.state.cache.emptyDir = true; });
 
     "ordinary optional state may be absent or deliberately backed" =
       !(cfg.nixmulti.services.web.state ? cache)

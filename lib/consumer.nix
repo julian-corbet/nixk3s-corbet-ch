@@ -90,6 +90,7 @@ let
 in
 
 { namespace
+, optionPath ? [ namespace ]
 , catalogue ? null
 , roots ? null
 , root ? "applications"
@@ -107,7 +108,18 @@ in
 { config, lib, options, ... }:
 
 let
-  cfg = config.${namespace};
+  checkedOptionPath =
+    if !builtins.isList optionPath
+      || optionPath == [ ]
+      || !(lib.all (part: lib.isString part && part != "") optionPath)
+    then throw "mkConsumerModule: optionPath must be a non-empty list of non-empty strings"
+    else optionPath;
+  showPathPart = part:
+    if builtins.match "[A-Za-z_][A-Za-z0-9_-]*" part != null
+    then part
+    else builtins.toJSON part;
+  optionPathText = lib.concatMapStringsSep "." showPathPart checkedOptionPath;
+  cfg = lib.getAttrFromPath checkedOptionPath config;
   platform = cfg.${platformOption};
   addressingIsDefined = lib.hasAttrByPath [ "nixk3s" "addressing" "reservations" ] options;
 
@@ -282,7 +294,7 @@ let
     {
       assertion = false;
       message =
-        "${namespace}: manifest/reference workloads claim slots while `${namespace}.${platformOption}.origin` "
+        "${namespace}: manifest/reference workloads claim slots while `${optionPathText}.${platformOption}.origin` "
         + "is set, but the nixk3s addressing module is not composed. Their occupancy cannot be "
         + "published as reservations, so live slots would appear free.";
     };
@@ -304,7 +316,9 @@ let
   # comes from the declaration, and neither side can supply the other's half.
   # The rendered volume's NAME is the catalogue's name for the directory unless the declaration
   # says the live object calls it something else -- which only an adoption ever needs.
-  volumeNameOf = w: key: if w.state.${key}.volumeName != null then w.state.${key}.volumeName else key;
+  volumeNameOf = w: key:
+    let resolved = w.state.${key}.volumeName or null; in
+    if resolved != null then resolved else key;
 
   # KEYS BOTH SIDES KNOW ABOUT. The guard that catches a directory only one side has is a state
   # assertion; every use of the catalogue that indexes it BY A DECLARATION'S KEY must walk the
@@ -329,11 +343,11 @@ let
 
   backingChosen = backing:
     lib.head (lib.filter (b: b != null) [
-      (if backing.claim != null then "claim" else null)
-      (if backing.hostPath != null then "hostPath" else null)
-      (if backing.configMap != null then "configMap" else null)
-      (if backing.secret != null then "secret" else null)
-      (if backing.emptyDir then "emptyDir" else null)
+      (if (backing.claim or null) != null then "claim" else null)
+      (if (backing.hostPath or null) != null then "hostPath" else null)
+      (if (backing.configMap or null) != null then "configMap" else null)
+      (if (backing.secret or null) != null then "secret" else null)
+      (if backing.emptyDir or false then "emptyDir" else null)
     ] ++ [ null ]);
 
   stateOf = entry: w:
@@ -342,11 +356,17 @@ let
         let ro = entryReadOnly entry.state.${key}; in
         let
           ms = mountsOfEntry entry.state.${key};
-          ro' = if ro != null then ro else backing.readOnly;
+          ro' = if ro != null then ro else backing.readOnly or false;
         in
         lib.nameValuePair (volumeNameOf w key) (
           {
-            inherit (backing) claim hostPath hostPathType configMap secret emptyDir ownership;
+            claim = backing.claim or null;
+            hostPath = backing.hostPath or null;
+            hostPathType = backing.hostPathType or "Directory";
+            configMap = backing.configMap or null;
+            secret = backing.secret or null;
+            emptyDir = backing.emptyDir or false;
+            ownership = backing.ownership or "site-curated";
           }
           # `mountPath` and `mounts` are alternatives in the grammar, not a pair.
           // (if lib.length ms == 1
@@ -744,11 +764,11 @@ let
           assertion = lib.all
             (backing:
               lib.length (lib.filter (b: b) [
-                (backing.claim != null)
-                (backing.hostPath != null)
-                (backing.configMap != null)
-                (backing.secret != null)
-                backing.emptyDir
+                ((backing.claim or null) != null)
+                ((backing.hostPath or null) != null)
+                ((backing.configMap or null) != null)
+                ((backing.secret or null) != null)
+                (backing.emptyDir or false)
               ]) == 1)
             (lib.attrValues w.state);
           message =
@@ -787,7 +807,9 @@ let
           # chowned recursively on every pod start, because that cost scales with the tree and the
           # tree is the thing that keeps getting bigger.
           assertion = lib.all
-            (key: !((entry.state.${key}.grows or false) && w.state.${key}.ownership == "kubelet"))
+            (key:
+              !((entry.state.${key}.grows or false)
+                && (w.state.${key}.ownership or "site-curated") == "kubelet"))
             (sharedStateKeys entry w);
           message =
             "${namespace}: workload `${name}` asks the kubelet to own a directory the catalogue says "
@@ -1471,7 +1493,7 @@ let
           when = (w.slot or null) != null && platform.origin == null;
           message =
             "${namespace}: workload `${name}` claims slot ${toString (w.slot or null)}, and "
-            + "`${namespace}.${platformOption}.origin` is unset — so the number is checked for "
+            + "`${optionPathText}.${platformOption}.origin` is unset — so the number is checked for "
             + "collisions inside this repository and by nothing for which RANGE it may come from.";
         }
         {
@@ -1761,7 +1783,7 @@ let
     namespace = lib.mkOption {
       type = lib.types.str;
       default = platform.namespace;
-      defaultText = lib.literalExpression "config.${namespace}.${platformOption}.namespace";
+      defaultText = lib.literalExpression "config.${optionPathText}.${platformOption}.namespace";
       description = "Namespace this workload lands in.";
     };
 
@@ -1777,7 +1799,7 @@ let
     project = lib.mkOption {
       type = lib.types.str;
       default = platform.project;
-      defaultText = lib.literalExpression "config.${namespace}.${platformOption}.project";
+      defaultText = lib.literalExpression "config.${optionPathText}.${platformOption}.project";
       description = "Delivery project this workload's Application belongs to.";
     };
 
@@ -2110,7 +2132,7 @@ let
     else lib.mapAttrs rootOption rootSpecs;
 in
 {
-  options.${namespace} = {
+  options = lib.setAttrByPath checkedOptionPath ({
     ${platformOption} = (lib.optionalAttrs (anyRootUsesCommonOption "namespace") {
       namespace = lib.mkOption {
         type = lib.types.str;
@@ -2187,7 +2209,7 @@ in
       defaultText = lib.literalExpression "every enabled entry dispatched to `reference`";
       description = "Declarations that deliberately render no object, but remain available to interlocks.";
     };
-  } // rootOptionDeclarations // checkedExtraNamespaceOptions;
+  } // rootOptionDeclarations // checkedExtraNamespaceOptions);
 
   config = lib.mkMerge [
     {
