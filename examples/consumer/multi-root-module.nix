@@ -175,7 +175,7 @@ in
           };
           manifestsOf = { w, ... }: w.manifests ++ w.generatedManifests;
           requiredStateKeys = { entry, ... }:
-            entry.requiredStateKeys or lib.attrNames (entry.state or { });
+            entry.requiredStateKeys or (lib.attrNames (entry.state or { }));
           allowedStateKeys = { entry, w, ... }:
             lib.filter
               (key: key != (entry.archiveStateKey or null) || w.storageMode == "archive")

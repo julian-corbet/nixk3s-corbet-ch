@@ -1,4 +1,4 @@
-{ }:
+{ ... }:
 {
   nixidy.target.repository = "https://example.com/example-org/example-gitops.git";
   nixidy.target.branch = "main";
