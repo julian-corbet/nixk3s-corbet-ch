@@ -85,12 +85,13 @@
         # reached eight of thirteen and stopped, because the pass that added it only looked at the
         # repositories a consumer happened to compose.
         #
-        # A catalogue repository now calls this with its own catalogue and gets the whole
+        # A catalogue repository now calls this with one catalogue, or with several roots whose
+        # selected entries dispatch to typed apps, opaque manifests, or references. It gets the
         # declaration vocabulary, the knowledge/value split, the assertions and the warnings. What
         # only IT knows — a WOPI host list, a retention argument, a write probe, a GPU hook — it
-        # supplies through `extend` and `extraOptions`, because roughly sixty catalogue fields are
-        # read by exactly one repository and pretending those were universal would be a worse lie
-        # than the copies were.
+        # supplies through `extend` and root-local options/hooks, because roughly sixty catalogue
+        # fields are read by exactly one repository and pretending those were universal would be a
+        # worse lie than the copies were.
         mkConsumerModule = import ./lib/consumer.nix { inherit lib; };
       };
 
@@ -161,6 +162,24 @@
                 catalogue = (import ./examples/consumer/catalogue.nix { }).entries;
               })
               ./examples/consumer/values.nix
+            ];
+          };
+
+          # The factory's general shape: several catalogue roots, one fixed synthetic entry, and
+          # rendering-kind dispatch read from each selected entry. Database engines and CI systems
+          # need this because one user-facing table can contain both grammar apps and operator/chart
+          # deliveries; splitting that table would move a property of the software into the UI.
+          multiConsumerModule = import ./examples/consumer/multi-root-module.nix {
+            inherit lib;
+            mkConsumerModule = self.lib.mkConsumerModule;
+          };
+
+          multiConsumerEnv = nixidy.lib.mkEnv {
+            inherit pkgs;
+            modules = [
+              self.nixidyModules.apps
+              multiConsumerModule
+              ./examples/consumer/multi-root-values.nix
             ];
           };
 
@@ -270,6 +289,17 @@
             inherit pkgs lib;
             env = consumerEnv;
           };
+
+          consumer-multi-root = import ./checks/consumer-multi-root.nix {
+            inherit pkgs lib nixidy;
+            appsModule = self.nixidyModules.apps;
+            addressingModule = self.nixidyModules.addressing;
+            consumerModule = multiConsumerModule;
+            mkConsumerModule = self.lib.mkConsumerModule;
+            values = ./examples/consumer/multi-root-values.nix;
+          };
+
+          consumer-multi-root-renders = multiConsumerEnv.environmentPackage;
 
           host-module-evaluates =
             pkgs.writeText "nixk3s-host-drvpath"

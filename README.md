@@ -41,6 +41,11 @@ production-lived answer:
   is what lets it be public while the clusters it renders for stay private.
   Two visible ways out for what it has no term for — a typed merge onto the
   objects it renders, and a countable `raw` escape hatch.
+- **`lib.mkConsumerModule`** ([consumer factory](docs/CONSUMER.md), landed) — the catalogue side of
+  that grammar. The small form translates one catalogue; the general form composes several roots
+  and dispatches each selected entry to a typed app, opaque manifests, or a non-rendered reference.
+  Entry-derived defaults stay overridable, while root-specific absences such as an execution
+  runner having no exposure or slot are structural unknown-option errors.
 - **`addressing`** ([`nixidyModules.addressing`](modules/addressing), landed) —
   the band model: a declaring repository binds one *band* (a contiguous run of
   slots), every app it declares takes its *slot* inside that band, and a slot

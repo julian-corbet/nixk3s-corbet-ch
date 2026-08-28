@@ -90,26 +90,202 @@ let
 in
 
 { namespace
-, catalogue
+, catalogue ? null
+, roots ? null
 , root ? "applications"
 , selector ? "app"
 , platformOption ? "clusterPlatform"
+, extraPlatformOptions ? { }
+, extraNamespaceOptions ? { }
 , extraOptions ? { }
 , extend ? (_entry: _w: app: app)
 , extraAssertions ? (_workloads: [ ])
 , extraWarnings ? (_workloads: [ ])
+, extraConfig ? (_workloads: { })
 }:
 
-{ config, lib, ... }:
+{ config, lib, options, ... }:
 
 let
   cfg = config.${namespace};
   platform = cfg.${platformOption};
+  addressingIsDefined = lib.hasAttrByPath [ "nixk3s" "addressing" "reservations" ] options;
 
-  declared = lib.filterAttrs (_: w: w.enable) cfg.${root};
-  workloads = lib.mapAttrsToList
-    (name: w: { inherit name w; entry = catalogue.${w.${selector}}; })
-    declared;
+  # Roots may remove a term structurally. The renderer still works against one total internal
+  # record so an absent optional term means its closed/null value rather than an attribute error
+  # that arrives before a root's own guard. These are renderer fallbacks, NOT option defaults: a
+  # removed option remains unwritable, and an enabled option keeps the documented default below.
+  workloadDefaults = {
+    enable = true;
+    version = null;
+    image = null;
+    manifests = [ ];
+    companionImages = { };
+    companionResources = { };
+    initImages = { };
+    objectName = null;
+    replicas = null;
+    namespace = null;
+    createNamespace = false;
+    project = null;
+    slot = null;
+    exposure = "internal";
+    scaling = "always";
+    wake = null;
+    adopt = false;
+    harden = true;
+    state = { };
+    probes = { };
+    resources = {
+      cpuRequest = null;
+      memoryRequest = null;
+      cpuLimit = null;
+      memoryLimit = null;
+    };
+    credentials = {
+      secret = null;
+      keys = { };
+      secrets = { };
+    };
+    requires = { };
+    publicUrl = null;
+    identity = null;
+    env = { };
+    args = [ ];
+  };
+
+  # ONE ROOT was enough for the first three adopters and is still the small API. `roots` is the
+  # general form for catalogues whose user-facing concepts genuinely are several tables (database
+  # operators/instances/tools, CI forges/servers/runners/jobs). They are normalised to the same
+  # internal shape, so the old call is not a second implementation and cannot age separately.
+  #
+  # A root may either select from a catalogue:
+  #
+  #   services = { catalogue = catalogues.services; selector = "service"; ...; };
+  #
+  # or carry one fixed synthetic entry (a schedule is not software and has no catalogue key):
+  #
+  #   jobs = { entry = jobEntry; ...; };
+  #
+  # `kind` dispatches each SELECTED ENTRY to `app`, `manifest`, or `reference`. It is deliberately
+  # a function of the entry rather than an option in the declaration: whether Postgres is an
+  # operator-owned custom resource, or whether a forge is somebody else's, is knowledge about the
+  # thing and cannot vary by cluster.
+  rawRoots =
+    if roots != null && catalogue != null then
+      throw "mkConsumerModule: pass either `catalogue` (one root) or `roots` (several), never both"
+    else if roots != null then roots
+    else if catalogue != null then {
+      ${root} = {
+        inherit catalogue selector extraOptions;
+        extend = { entry, w, app, ... }: extend entry w app;
+      };
+    }
+    else
+      throw "mkConsumerModule: one of `catalogue` or `roots` is required";
+
+  normaliseRoot = rootName: r:
+    let
+      hasCatalogue = r ? catalogue;
+      hasEntry = r ? entry;
+    in
+    if hasCatalogue == hasEntry then
+      throw "mkConsumerModule: root `${rootName}` must define exactly one of `catalogue` or `entry`"
+    else {
+      inherit rootName;
+      catalogue = r.catalogue or null;
+      entry = r.entry or null;
+      selector = r.selector or "app";
+      selectorDefault = r.selectorDefault or null;
+      enabledOptions = r.enabledOptions or null;
+      disabledOptions = r.disabledOptions or [ ];
+      extraOptions = r.extraOptions or { };
+      enableByDefault = r.enableByDefault or (_: true);
+      defaults = r.defaults or (_: { });
+      kind = r.kind or (_: "app");
+      namespaceOf = r.namespaceOf or ({ w, ... }: w.namespace);
+      projectOf = r.projectOf or ({ w, ... }: w.project);
+      createNamespaceOf = r.createNamespaceOf or ({ w, ... }: w.createNamespace or false);
+      manifestsOf = r.manifestsOf or ({ w, ... }: w.manifests or [ ]);
+      nameOf = r.nameOf or ({ name, w, ... }:
+        if (w.objectName or null) != null then w.objectName else name);
+      requiredStateKeys = r.requiredStateKeys or ({ entry, ... }: lib.attrNames (entry.state or { }));
+      allowedStateKeys = r.allowedStateKeys or ({ entry, ... }: lib.attrNames (entry.state or { }));
+      extend = r.extend or ({ app, ... }: app);
+      extendManifest = r.extendManifest or ({ application, ... }: application);
+      assertions = r.assertions or (_: [ ]);
+      warnings = r.warnings or (_: [ ]);
+      description = r.description or null;
+    };
+
+  rootSpecs = lib.mapAttrs normaliseRoot rawRoots;
+
+  # `extraOptions` is an overlay with two meanings. Over an ENABLED common term it refines the
+  # module contract while the generic renderer stays responsible (a required string `version`,
+  # for example). Over a DISABLED common term it redeclares an incompatible domain shape and the
+  # root takes responsibility for rendering and guards (role credentials, legacy state/sizing).
+  # Keep the marker from common-option selection rather than looking at the final option set,
+  # where either kind of overlay is intentionally present.
+  usesCommonOption = spec: option:
+    if spec.enabledOptions != null
+    then lib.elem option spec.enabledOptions
+    else !(lib.elem option spec.disabledOptions);
+
+  anyRootUsesCommonOption = option:
+    lib.any (spec: usesCommonOption spec option) (lib.attrValues rootSpecs);
+
+  selectionOf = spec: w:
+    if spec.entry != null then spec.rootName else w.${spec.selector};
+
+  entryOf = spec: w:
+    if spec.entry != null then spec.entry else spec.catalogue.${w.${spec.selector}};
+
+  contextOf = spec: name: declaration:
+    let
+      entry = entryOf spec declaration;
+      selected = selectionOf spec declaration;
+      w = workloadDefaults // declaration;
+      base = {
+        inherit name w entry selected platform;
+        inherit declaration;
+        consumer = cfg;
+        moduleConfig = config;
+        root = spec.rootName;
+        inherit spec;
+      };
+      kind = spec.kind base;
+    in base // { inherit kind; };
+
+  declaredByRoot = lib.mapAttrs
+    (rootName: spec: lib.filterAttrs (_: w: w.enable) cfg.${rootName})
+    rootSpecs;
+
+  allWorkloads = lib.concatLists (lib.mapAttrsToList
+    (rootName: spec: lib.mapAttrsToList (contextOf spec) declaredByRoot.${rootName})
+    rootSpecs);
+
+  # A callback is outside the module option type system. Guard its type before equality: Nix
+  # cannot compare a function with a string, and a raw equality error would arrive before the
+  # dispatch assertion that is meant to explain an invalid callback result.
+  isKind = expected: x: lib.isString x.kind && x.kind == expected;
+
+  workloads = lib.filter (isKind "app") allWorkloads;
+  manifestWorkloads = lib.filter (isKind "manifest") allWorkloads;
+  referenceWorkloads = lib.filter (isKind "reference") allWorkloads;
+  commonStateWorkloads = lib.filter (x: usesCommonOption x.spec "state") workloads;
+  nonGrammarSlotWorkloads = lib.filter
+    (x: (x.w.slot or null) != null)
+    (manifestWorkloads ++ referenceWorkloads);
+
+  addressingAvailabilityAssertions = lib.optional
+    (!addressingIsDefined && platform.origin != null && nonGrammarSlotWorkloads != [ ])
+    {
+      assertion = false;
+      message =
+        "${namespace}: manifest/reference workloads claim slots while `${namespace}.${platformOption}.origin` "
+        + "is set, but the nixk3s addressing module is not composed. Their occupancy cannot be "
+        + "published as reservations, so live slots would appear free.";
+    };
 
   # A whole reference wins over a repository plus a tag, which is what pinning by digest looks
   # like. The catalogue never carries either: a version is a deployment's choice and a digest is
@@ -297,8 +473,11 @@ let
   # Mounts are keyed by the CATALOGUE's name for a directory and must land on the volume this
   # DEPLOYMENT calls it. That coupling is easy to miss and fails loudly but late: a companion
   # mounting a volume the app no longer declares is refused by the grammar, not here.
-  remapMounts = w: ms:
-    lib.mapAttrs' (k: v: lib.nameValuePair (if w.state ? ${k} then volumeNameOf w k else k) v) ms;
+  remapMounts = spec: w: ms:
+    if usesCommonOption spec "state" then
+      lib.mapAttrs' (k: v: lib.nameValuePair (if w.state ? ${k} then volumeNameOf w k else k) v) ms
+    else
+      ms;
 
   containerSecurityOf = entry: w: c:
     let h = c.hardening or null; in
@@ -318,7 +497,7 @@ let
       liveness = dropNulls ({ port = c.primaryPort; } // c.liveness);
     };
 
-  companionsOf = entry: w:
+  companionsOf = spec: entry: w:
     lib.mapAttrs
       (cname: c:
         {
@@ -327,16 +506,19 @@ let
           args = c.args or [ ];
           env = c.env or { };
           ports = lib.mapAttrs (_: normalisePort) (c.ports or { });
-          mounts = remapMounts w (c.mounts or { });
+          mounts = remapMounts spec w (c.mounts or { });
           security = containerSecurityOf entry w c;
           probes = containerProbesOf c;
           # A companion nobody sized asks for nothing, which renders no `resources` block at all
           # rather than a zero -- a different and much worse claim.
-          resources = resourcesFrom (w.companionResources.${cname} or null);
+          resources =
+            if usesCommonOption spec "companionResources"
+            then resourcesFrom (w.companionResources.${cname} or null)
+            else resourcesFrom null;
         })
       (entry.companions or { });
 
-  initOf = entry: w:
+  initOf = spec: entry: w:
     map
       (c: {
         inherit (c) name;
@@ -344,7 +526,7 @@ let
         command = c.command or [ ];
         args = c.args or [ ];
         env = c.env or { };
-        mounts = remapMounts w (c.mounts or { });
+        mounts = remapMounts spec w (c.mounts or { });
         security = containerSecurityOf entry w c;
         # NO PORTS AND NO PROBES: the API server rejects a readiness probe on a non-restartable
         # init container, and a port on a process that has already exited is a fact about nothing.
@@ -409,18 +591,29 @@ let
   addressingOf = w:
     lib.optionalAttrs (platform.origin != null) {
       origin = platform.origin;
-      inherit (w) slot;
+      slot = w.slot or null;
     };
 
+  renderNameOf = x: x.spec.nameOf x;
+
   mkApp = x:
-    let inherit (x) entry w; in
-    extend entry w (
-      {
-        inherit (w) namespace createNamespace project exposure scaling adopt;
+    let
+      inherit (x) entry w spec;
+      namespace' = spec.namespaceOf x;
+      project' = spec.projectOf x;
+      createNamespace' = spec.createNamespaceOf x;
+      base = {
+        namespace = namespace';
+        project = project';
+        createNamespace = createNamespace';
+        name = renderNameOf x;
+        exposure = w.exposure or "internal";
+        scaling = w.scaling or "always";
+        adopt = w.adopt or false;
         image = imageOf entry w;
         ports = portsOf entry;
-        state = stateOf entry w;
-        secrets = secretsOf entry w;
+        state = if usesCommonOption spec "state" then stateOf entry w else { };
+        secrets = if usesCommonOption spec "credentials" then secretsOf entry w else { };
         # ORDER IS THE POINT. The catalogue's own environment first, then the endpoints of the
         # services this one needs, then its own public URL, then whatever the declaration adds --
         # so a consumer can override any of it and nothing can override the consumer.
@@ -428,7 +621,7 @@ let
         args = (entry.args or [ ]) ++ w.args;
         probes = probesOf entry w;
         security = securityOf entry w;
-        resources = resourcesOf w;
+        resources = if usesCommonOption spec "resources" then resourcesOf w else resourcesFrom null;
 
         # THREE TERMS THE GRAMMAR HAS AND THIS FACTORY NEVER FORWARDED. Each is a fact about the
         # software, stated in a catalogue, that reached the grammar in some hand-written
@@ -444,14 +637,49 @@ let
         gpu = entry.gpu or false;
         singleWriter = entry.singleWriter or false;
       }
-      // lib.optionalAttrs ((entry.init or [ ]) != [ ]) { init = initOf entry w; }
-      // lib.optionalAttrs ((entry.companions or { }) != { }) { companions = companionsOf entry w; }
-      // lib.optionalAttrs (w.objectName != null) { name = w.objectName; }
-      // lib.optionalAttrs (w.replicas != null) { inherit (w) replicas; }
-      // lib.optionalAttrs (w.wake != null) { inherit (w) wake; }
+      // lib.optionalAttrs ((entry.init or [ ]) != [ ]) { init = initOf spec entry w; }
+      // lib.optionalAttrs ((entry.companions or { }) != { }) { companions = companionsOf spec entry w; }
+      // lib.optionalAttrs ((w.replicas or null) != null) { inherit (w) replicas; }
+      // lib.optionalAttrs ((w.wake or null) != null) { inherit (w) wake; }
       // identityOf entry w
-      // addressingOf w
-    );
+      // addressingOf w;
+      extended = spec.extend (x // { app = base; });
+    in
+    # An extension may add domain fields but cannot change the identity/tenancy inputs that the
+    # central collision and namespace-anchor guards reasoned about.
+    extended // {
+      name = renderNameOf x;
+      namespace = namespace';
+      project = project';
+      createNamespace = createNamespace';
+    };
+
+  # A manifest delivery is one Application and a list of whole objects. Custom resources and
+  # rendered Helm charts are intentionally the SAME kind here: nixidy does not interpret either
+  # schema, and this factory must not pretend it can validate an operator's API version. The
+  # Application still gets the two adoption-safe switches every surveyed translator repeated.
+  mkManifestApplication = x:
+    let
+      base = {
+        namespace = x.spec.namespaceOf x;
+        project = x.spec.projectOf x;
+        createNamespace = false;
+        yamls = x.spec.manifestsOf x;
+        syncPolicy.syncOptions.serverSideApply = true;
+        compareOptions.serverSideDiff = true;
+      };
+      extended = x.spec.extendManifest (x // { application = base; });
+    in
+    # The direct Application's module key is already `nameOf`; it has no second name field. Its
+    # tenancy and delivery-safety fields remain factory-owned after a domain extension.
+    lib.recursiveUpdate extended {
+      namespace = x.spec.namespaceOf x;
+      project = x.spec.projectOf x;
+      createNamespace = false;
+      yamls = x.spec.manifestsOf x;
+      syncPolicy.syncOptions.serverSideApply = true;
+      compareOptions.serverSideDiff = true;
+    };
 
   # ── Assertions ───────────────────────────────────────────────────────────────────────────────
   #
@@ -461,18 +689,56 @@ let
 
   stateAssertions = lib.concatMap
     (x:
-      let inherit (x) name w entry; in
+      let
+        inherit (x) name w entry selected spec;
+        catalogued = lib.attrNames (entry.state or { });
+        required = spec.requiredStateKeys x;
+        allowed = spec.allowedStateKeys x;
+        declared = lib.attrNames w.state;
+        requiredOutsideAllowed = lib.filter (key: !(lib.elem key allowed)) required;
+        allowedOutsideCatalogue = lib.filter (key: !(lib.elem key catalogued)) allowed;
+        missing = lib.filter (key: !(lib.elem key declared)) required;
+        unknown = lib.filter (key: !(lib.elem key catalogued)) declared;
+        forbidden = lib.filter
+          (key: lib.elem key catalogued && !(lib.elem key allowed))
+          declared;
+        showKeys = keys: lib.concatMapStringsSep ", " (key: "`${key}`") keys;
+      in
       [
         {
-          assertion = lib.attrNames w.state == lib.attrNames (entry.state or { });
+          assertion = requiredOutsideAllowed == [ ];
           message =
-            "${namespace}: workload `${name}` must back every directory it writes, and backs "
-            + (if w.state == { } then "none" else lib.concatMapStringsSep ", " (k: "`${k}`") (lib.attrNames w.state))
-            + ". It writes: "
-            + (if (entry.state or { }) == { } then "nothing"
-            else lib.concatStringsSep ", "
-              (lib.mapAttrsToList (k: p: "`${k}` at ${mountPathOf p}") entry.state))
-            + ".";
+            "${namespace}: root `${x.root}` marks ${showKeys requiredOutsideAllowed} as required "
+            + "state for `${selected}` but not allowed state. `requiredStateKeys` must be a subset "
+            + "of `allowedStateKeys`; otherwise no declaration can satisfy the root contract.";
+        }
+        {
+          assertion = allowedOutsideCatalogue == [ ];
+          message =
+            "${namespace}: root `${x.root}` allows ${showKeys allowedOutsideCatalogue} as state for "
+            + "`${selected}`, but the catalogue does not name those directories. `allowedStateKeys` "
+            + "must be a subset of the catalogue's state keys.";
+        }
+        {
+          assertion = missing == [ ];
+          message =
+            "${namespace}: workload `${name}` must back every directory it writes that this root "
+            + "marks required, and is missing ${showKeys missing}. Required: "
+            + (if required == [ ] then "none" else showKeys required) + ".";
+        }
+        {
+          assertion = unknown == [ ];
+          message =
+            "${namespace}: workload `${name}` must back every directory it writes using catalogue "
+            + "keys, and declares unknown state ${showKeys unknown}. Catalogued: "
+            + (if catalogued == [ ] then "none" else showKeys catalogued) + ".";
+        }
+        {
+          assertion = forbidden == [ ];
+          message =
+            "${namespace}: workload `${name}` declares ${showKeys forbidden}, which is catalogued "
+            + "state for `${selected}` but forbidden for this declaration by `allowedStateKeys`. "
+            + "Allowed here: " + (if allowed == [ ] then "none" else showKeys allowed) + ".";
         }
         {
           assertion = lib.all
@@ -511,7 +777,7 @@ let
               chosen == null || lib.elem chosen (backingsAllowed entry key))
             (sharedStateKeys entry w);
           message =
-            "${namespace}: workload `${name}` backs a directory with something `${w.${selector}}` "
+            "${namespace}: workload `${name}` backs a directory with something `${selected}` "
             + "does not accept for it. The catalogue names what this software's data can live on, "
             + "and the rest are not a worse choice, they are a silent one -- a scratch directory "
             + "under a database is discarded on exactly the restart that state exists to survive.";
@@ -530,7 +796,7 @@ let
             + "outside the cluster it destroys ownership that was set there deliberately.";
         }
       ])
-    workloads;
+    commonStateWorkloads;
 
   # A budget is an override of something, so there has to be something. Budgeting a probe the
   # software does not warrant is the same class of mistake as backing a directory it does not
@@ -539,7 +805,7 @@ let
   probeAssertions = lib.concatMap
     (x:
       let
-        inherit (x) name w entry;
+        inherit (x) name w entry selected;
         shapes = probeShapesOf entry;
         stray = lib.subtractLists (lib.attrNames shapes) (lib.attrNames w.probes);
       in
@@ -548,7 +814,7 @@ let
         message =
           "${namespace}: workload `${name}` budgets "
           + lib.concatMapStringsSep ", " (k: "`${k}`") stray
-          + ", which `${w.${selector}}` does not warrant. It warrants: "
+          + ", which `${selected}` does not warrant. It warrants: "
           + (if shapes == { } then "no probes at all"
           else lib.concatMapStringsSep ", " (k: "`${k}`") (lib.attrNames shapes))
           + ". A budget for a probe that is never rendered is a number nothing reads.";
@@ -562,7 +828,7 @@ let
   credentialAssertions = lib.concatMap
     (x:
       let
-        inherit (x) name w entry;
+        inherit (x) name w entry selected;
         vars = entry.credentials or [ ];
         reads = vars != [ ];
         named = w.credentials.secret != null || w.credentials.secrets != { };
@@ -584,7 +850,7 @@ let
               + "a declaration owes -- as `credentials.secret` for all of them, or "
               + "`credentials.secrets.<VARIABLE>` for one that comes from somewhere else."
             else
-              "${namespace}: workload `${name}` names a Secret, and `${w.${selector}}` reads no "
+              "${namespace}: workload `${name}` names a Secret, and `${selected}` reads no "
               + "credential from its environment. A reference nothing consumes is a typo, not a "
               + "declaration.";
         }
@@ -593,18 +859,18 @@ let
           message =
             "${namespace}: workload `${name}` maps a key for "
             + lib.concatMapStringsSep ", " (v: "`${v}`") stray
-            + ", which `${w.${selector}}` does not read. A key mapping renames the KEY inside the "
+            + ", which `${selected}` does not read. A key mapping renames the KEY inside the "
             + "Secret for a variable the software already looks in; it cannot invent the variable.";
         }
       ])
-    workloads;
+    (lib.filter (x: usesCommonOption x.spec "credentials") workloads);
 
   # ONE OF THE TWO WAYS OF SAYING WHAT RUNS, and exactly one. Neither is a default anybody could
   # supply: a catalogue naming a version would be guessing at somebody else's cluster, and a
   # workload with no reference at all is one nothing can start.
   imageAssertions = lib.concatMap
     (x:
-      let inherit (x) name w entry; in
+      let inherit (x) name w entry selected; in
       [{
         assertion = w.image != null || w.version != null;
         message =
@@ -617,7 +883,7 @@ let
         # rather than a coercion error thrown while building a tag out of null.
         assertion = (entry.image or null) != null || w.image != null;
         message =
-          "${namespace}: workload `${name}` runs `${w.${selector}}`, which nobody publishes an "
+          "${namespace}: workload `${name}` runs `${selected}`, which nobody publishes an "
           + "image for -- the catalogue holds a build recipe rather than a repository, so a "
           + "version has nothing to be a tag OF. This declaration must carry a whole image "
           + "reference, for a container somebody built.";
@@ -662,7 +928,7 @@ let
 
   idleMessage = x:
     withBecause x.entry "idleSafe"
-      ("${namespace}: workload `${x.name}` is declared scale-to-zero, and `${x.w.${selector}}` is "
+      ("${namespace}: workload `${x.name}` is declared scale-to-zero, and `${x.selected}` is "
         + "catalogued as unsafe to idle -- it has work that happens while nobody is looking. At "
         + "zero replicas that work does not happen late, it does not happen.");
 
@@ -680,7 +946,7 @@ let
   requiresAssertions = lib.concatMap
     (x:
       let
-        inherit (x) name w entry;
+        inherit (x) name w entry selected;
         catalogued = lib.attrNames (entry.requires or { });
         declared = lib.attrNames w.requires;
         missing = lib.subtractLists declared catalogued;
@@ -709,7 +975,7 @@ let
           message =
             "${namespace}: workload `${name}` is told where to find "
             + lib.concatMapStringsSep ", " (k: "`${k}`") stray
-            + ", which `${w.${selector}}` does not read. An endpoint nothing consumes is a typo, "
+            + ", which `${selected}` does not read. An endpoint nothing consumes is a typo, "
             + "not a declaration.";
         }
         {
@@ -720,7 +986,7 @@ let
           message =
             "${namespace}: workload `${name}` is given an endpoint for "
             + lib.concatMapStringsSep ", " (k: "`${k}`") wrongScheme
-            + " that does not speak the protocol `${w.${selector}}` expects there. The catalogue "
+            + " that does not speak the protocol `${selected}` expects there. The catalogue "
             + "says which scheme belongs on each of these, because that is a property of the "
             + "software rather than of one cluster's routing.";
         }
@@ -785,7 +1051,7 @@ let
             + "workload can no longer see it. Rename the keys so the outer one sorts first.";
         })
         pairs)
-    workloads;
+    commonStateWorkloads;
 
   # The same collision, caused by a rename rather than by the catalogue. It warns because a rename
   # records what a live object is ALREADY called: refusing would make an existing cluster
@@ -822,7 +1088,7 @@ let
             + "presumably what the live objects already carry, which is why this is not refused.";
         })
         renamed)
-    workloads;
+    commonStateWorkloads;
 
   # WHO IT RUNS AS, refused in both directions. An image that can only start as uid 0 and a
   # declaration that names a role are each individually sensible and together are a contradiction:
@@ -832,7 +1098,7 @@ let
   # like it decided something.
   identityAssertions = lib.concatMap
     (x:
-      let inherit (x) name w entry; in
+      let inherit (x) name w entry selected; in
       [
         {
           # ONLY when there is no environment path for the role to arrive by. An image that starts
@@ -846,7 +1112,7 @@ let
               && (entry.identityEnv or null) == null);
           message =
             "${namespace}: workload `${name}` names the identity `${toString w.identity}`, and "
-            + "`${w.${selector}}` can only START as uid 0 with no variable to read a role from. The "
+            + "`${selected}` can only START as uid 0 with no variable to read a role from. The "
             + "role would be ignored rather than applied, which is worse than refusing it: somebody "
             + "would believe this pod was unprivileged.";
         }
@@ -864,7 +1130,7 @@ let
   containerAssertions = lib.concatMap
     (x:
       let
-        inherit (x) name w entry;
+        inherit (x) name w entry selected;
         comps = entry.companions or { };
         inits = entry.init or [ ];
         ownImage = c: (c.image or null) != null;
@@ -878,7 +1144,10 @@ let
         strayCompImage = lib.subtractLists compsOwn (lib.attrNames w.companionImages);
         missingInitImage = lib.subtractLists (lib.attrNames w.initImages) initsOwn;
         strayInitImage = lib.subtractLists initsOwn (lib.attrNames w.initImages);
-        straySizing = lib.subtractLists (lib.attrNames comps) (lib.attrNames w.companionResources);
+        straySizing =
+          if usesCommonOption x.spec "companionResources"
+          then lib.subtractLists (lib.attrNames comps) (lib.attrNames w.companionResources)
+          else [ ];
 
         initNames = map (c: c.name) inits;
         podNames = [ (if w.objectName != null then w.objectName else name) ]
@@ -901,7 +1170,7 @@ let
           message =
             "${namespace}: workload `${name}` gives an image for "
             + lib.concatMapStringsSep ", " (k: "`${k}`") (strayCompImage ++ strayInitImage)
-            + ", which is not a container of `${w.${selector}}` that runs an image of its own. A "
+            + ", which is not a container of `${selected}` that runs an image of its own. A "
             + "container that shares the application's installation shares its image; a name that "
             + "is neither is a typo, and a typo here renders a container nobody declared.";
         }
@@ -910,7 +1179,7 @@ let
           message =
             "${namespace}: workload `${name}` sizes "
             + lib.concatMapStringsSep ", " (k: "`${k}`") straySizing
-            + ", which is not a container of `${w.${selector}}`. A request against a container "
+            + ", which is not a container of `${selected}`. A request against a container "
             + "that does not exist is a number the scheduler never sees, in a declaration that "
             + "reads as though somebody had measured it.";
         }
@@ -947,13 +1216,13 @@ let
           + ", which Kubernetes will not accept as a name -- lowercase letters, digits and dashes, "
           + "starting and ending with a letter or a digit. This renders and then fails at apply.";
       }])
-    workloads;
+    commonStateWorkloads;
 
   # WHAT IT ASKS OF WHOEVER REACHES IT, against how far it is published. The same shape as the idle
   # guard: a catalogue fact crossed with a declaration's choice. Software that authenticates nobody,
   # published, is readable and rewritable by whoever finds it -- and an exposure class is a property
   # of the WORKLOAD, so there is no publishing half of it and no port to publish on its own.
-  authUnsafe = x: !(authenticatesOf x.entry) && x.w.exposure == "public";
+  authUnsafe = x: !(authenticatesOf x.entry) && (x.w.exposure or "internal") == "public";
 
   authenticatesOf = entry:
     let v = entry.authenticates or true; in
@@ -961,7 +1230,7 @@ let
 
   authMessage = x:
     withBecause x.entry "authenticates"
-      ("${namespace}: workload `${x.name}` is declared `public`, and `${x.w.${selector}}` asks "
+      ("${namespace}: workload `${x.name}` is declared `public`, and `${x.selected}` asks "
         + "nobody for anything -- there is no login on it at all, so whoever reaches it can read "
         + "and rewrite everything in it.");
 
@@ -977,12 +1246,12 @@ let
   # software tolerates it; nothing about one cluster's load changes the answer.
   replicaAssertions = lib.concatMap
     (x:
-      let inherit (x) name w entry; in
+      let inherit (x) name w entry selected; in
       [{
         assertion = w.replicas == null || w.replicas <= 1 || !(entry.singleWriter or false);
         message =
           "${namespace}: workload `${name}` asks for ${toString w.replicas} copies, and "
-          + "`${w.${selector}}` is catalogued as a single writer -- it holds a store that exactly "
+          + "`${selected}` is catalogued as a single writer -- it holds a store that exactly "
           + "one process may have open. A second copy does not share the load, it corrupts the "
           + "store, and the symptom arrives long after the change that caused it.";
       }])
@@ -992,11 +1261,11 @@ let
   # base. The catalogue decides whether this software has one to configure.
   publicUrlAssertions = lib.concatMap
     (x:
-      let inherit (x) name w entry; in
+      let inherit (x) name w entry selected; in
       [{
         assertion = w.publicUrl == null || (entry.selfUrlEnv or null) != null;
         message =
-          "${namespace}: workload `${name}` is given a public URL, and `${w.${selector}}` reads no "
+          "${namespace}: workload `${name}` is given a public URL, and `${selected}` reads no "
           + "variable to carry one. Nothing would consume it, so nothing would go wrong visibly -- "
           + "which is the whole reason this is an error rather than an unused value.";
       }
@@ -1024,8 +1293,11 @@ let
   # a merge, it is two Namespace objects the delivery controller will fight over.
   anchorAssertions =
     let
-      anchors = lib.filter (x: x.w.createNamespace) workloads;
-      byNs = lib.groupBy (x: x.w.namespace) anchors;
+      # Only the grammar can stamp a Namespace with prune protection. Dispatch assertions below
+      # refuse this flag on the other kinds; do not let those invalid declarations count as owners
+      # while collecting the cross-root uniqueness guard.
+      anchors = lib.filter (x: x.spec.createNamespaceOf x) workloads;
+      byNs = lib.groupBy (x: x.spec.namespaceOf x) anchors;
     in
     lib.mapAttrsToList
       (ns: xs: {
@@ -1039,7 +1311,7 @@ let
 
   slotAssertions =
     let
-      claimed = lib.filter (x: x.w.slot != null) workloads;
+      claimed = lib.filter (x: (x.w.slot or null) != null) allWorkloads;
       bySlot = lib.groupBy (x: toString x.w.slot) claimed;
     in
     lib.mapAttrsToList
@@ -1053,14 +1325,122 @@ let
       })
       bySlot;
 
+  # ── Root and rendering-kind dispatch ────────────────────────────────────────────────────────
+  #
+  # These are factory invariants, before any domain-specific interlock. A callback returning a
+  # misspelt kind must fail with a sentence rather than silently putting the declaration in no
+  # partition; an app carrying whole manifests must not render two competing copies; and a direct
+  # manifest may not create a Namespace because this lower-level renderer cannot stamp the
+  # grammar's prune protection on it.
+  showKind = kind: if lib.isString kind then kind else "<${builtins.typeOf kind}>";
+
+  dispatchAssertions = lib.concatMap
+    (x: [
+      {
+        assertion = lib.isString x.kind && lib.elem x.kind [ "app" "manifest" "reference" ];
+        message =
+          "${namespace}: `${x.root}.${x.name}` dispatches catalogue entry `${x.selected}` to "
+          + "unknown rendering kind `${showKind x.kind}`. The kinds are `app`, `manifest`, and "
+          + "`reference`; an unknown kind renders nothing and is therefore refused.";
+      }
+      {
+        assertion = !(isKind "app" x) || x.spec.manifestsOf x == [ ];
+        message =
+          "${namespace}: `${x.root}.${x.name}` is rendered in full by the app grammar and also "
+          + "carries whole manifests. That is two authorities for the same workload; put extra "
+          + "objects in the grammar's countable `raw` hatch instead.";
+      }
+      {
+        assertion = !(isKind "reference" x) || x.spec.manifestsOf x == [ ];
+        message =
+          "${namespace}: `${x.root}.${x.name}` is a reference and carries manifests. A reference "
+          + "exists precisely because this environment does not deliver it, so rendering objects "
+          + "under that declaration would contradict its catalogue kind.";
+      }
+      {
+        assertion =
+          !(isKind "manifest" x || isKind "reference" x)
+          || !(x.spec.createNamespaceOf x);
+        message =
+          "${namespace}: `${x.root}.${x.name}` is a `${showKind x.kind}` delivery and tries to create "
+          + "namespace `${x.spec.namespaceOf x}`. A non-grammar renderer cannot stamp the grammar's "
+          + "prune protection on a Namespace -- and a reference renders no object at all. Anchor "
+          + "the namespace through a grammar app or tenancy instead.";
+      }
+    ]) allWorkloads;
+
+  declarationNameAssertions =
+    let byName = lib.groupBy (x: x.name) allWorkloads; in
+    lib.mapAttrsToList
+      (name: xs: {
+        assertion = lib.length xs == 1;
+        message =
+          "${namespace}: declaration name `${name}` appears in more than one root ("
+          + lib.concatMapStringsSep ", " (x: "`${x.root}`") xs
+          + "). Roots are user-facing catalogue tables, not separate Kubernetes name scopes; one "
+          + "name would overwrite another Application.";
+      })
+      byName;
+
+  renderedWorkloads = workloads ++ lib.filter (x: x.spec.manifestsOf x != [ ]) manifestWorkloads;
+  renderNameAssertions =
+    let byName = lib.groupBy renderNameOf renderedWorkloads; in
+    lib.mapAttrsToList
+      (name: xs: {
+        assertion = lib.length xs == 1;
+        message =
+          "${namespace}: rendered name `${name}` is produced by more than one declaration ("
+          + lib.concatMapStringsSep ", " (x: "`${x.root}.${x.name}`") xs
+          + "). A grammar app and a manifest Application cannot own one Argo CD identity.";
+      })
+      byName;
+
+  # The grammar keeps its module key at the declaration name while `app.name` may adopt a live
+  # object name. Direct Applications are keyed by the resolved name. Check that module-key space
+  # separately from rendered identity: otherwise `applications.web` from each route can merge into
+  # one malformed Application even when the two objects' resolved names differ.
+  applicationKeyOf = x: if isKind "app" x then x.name else renderNameOf x;
+  applicationKeyAssertions =
+    let byName = lib.groupBy applicationKeyOf renderedWorkloads; in
+    lib.mapAttrsToList
+      (name: xs: {
+        assertion = lib.length xs == 1;
+        message =
+          "${namespace}: Application option key `${name}` is produced by more than one declaration ("
+          + lib.concatMapStringsSep ", " (x: "`${x.root}.${x.name}`") xs
+          + "). Grammar Applications keep the declaration key even when `nameOf` resolves their "
+          + "object name; a direct Application may not merge into that module subtree.";
+      })
+      byName;
+
+  rootAssertions = lib.concatLists (lib.mapAttrsToList
+    (rootName: spec: spec.assertions (lib.filter (x: x.root == rootName) allWorkloads))
+    rootSpecs);
+
+  rootWarnings = lib.concatLists (lib.mapAttrsToList
+    (rootName: spec: spec.warnings (lib.filter (x: x.root == rootName) allWorkloads))
+    rootSpecs);
+
+  dispatchWarnings = map
+    (x: {
+      when = x.spec.manifestsOf x == [ ];
+      message =
+        "${namespace}: `${x.root}.${x.name}` is a manifest delivery with no manifests, so this "
+        + "factory renders no Application for it. That is correct only when another module in the "
+        + "same environment delivers the object; the declaration remains available to interlocks.";
+    })
+    manifestWorkloads;
+
   # A warning is `{ when; message; }` — the renderer decides whether to print it, so the condition
   # travels with the text rather than being applied here.
   builtinWarnings = lib.concatMap
     (x:
-      let inherit (x) name w entry; in
+      let inherit (x) name w entry selected; in
       [
         {
-          when = w.scaling == "scale-to-zero" && w.wake == null;
+          when = usesCommonOption x.spec "wake"
+            && w.scaling == "scale-to-zero"
+            && w.wake == null;
           message =
             "${namespace}: workload `${name}` is declared scale-to-zero with no wake front, so "
             + "nothing brings it back. At zero replicas that is not an idle workload, it is an "
@@ -1071,14 +1451,16 @@ let
           # node ends up oversubscribed by workloads that each looked small. Nothing fills it in:
           # a number nobody measured is worse than an honest absence, and this keeps the absence
           # countable instead of invisible.
-          when = w.resources.cpuRequest == null && w.resources.memoryRequest == null;
+          when = usesCommonOption x.spec "resources"
+            && w.resources.cpuRequest == null
+            && w.resources.memoryRequest == null;
           message =
             "${namespace}: workload `${name}` asks for no CPU or memory, so the scheduler places it "
             + "as if it cost nothing. Nothing here fills that in -- a number nobody measured would "
             + "be a guess the scheduler then treats as a measurement.";
         }
         {
-          when = w.image != null;
+          when = usesCommonOption x.spec "image" && w.image != null;
           message =
             "${namespace}: workload `${name}` carries a whole image reference, so the `version` "
             + "beside it now chooses nothing -- the reference decides what runs. Keep them agreeing "
@@ -1086,16 +1468,18 @@ let
             + "a declaration that is technically correct.";
         }
         {
-          when = w.slot != null && platform.origin == null;
+          when = (w.slot or null) != null && platform.origin == null;
           message =
-            "${namespace}: workload `${name}` claims slot ${toString w.slot}, and "
+            "${namespace}: workload `${name}` claims slot ${toString (w.slot or null)}, and "
             + "`${namespace}.${platformOption}.origin` is unset — so the number is checked for "
             + "collisions inside this repository and by nothing for which RANGE it may come from.";
         }
         {
-          when = !w.harden && ((entry.hardening or null) != null);
+          when = usesCommonOption x.spec "harden"
+            && !w.harden
+            && ((entry.hardening or null) != null);
           message =
-            "${namespace}: workload `${name}` renders no securityContext, and `${w.${selector}}` is "
+            "${namespace}: workload `${name}` renders no securityContext, and `${selected}` is "
             + "catalogued with hardening classes it tolerates. The pod is therefore looser than the "
             + "software requires. That is a legitimate ADOPTION position — a live pod acquires these "
             + "fields by being replaced — and it is not a resting place.";
@@ -1280,13 +1664,6 @@ let
       '';
     };
 
-    ${selector} = lib.mkOption {
-      type = lib.types.enum (lib.attrNames catalogue);
-      description =
-        "Which entry from the catalogue this workload runs. Available: "
-        + lib.concatStringsSep ", " (lib.attrNames catalogue) + ".";
-    };
-
     version = lib.mkOption {
       type = lib.types.nullOr lib.types.str;
       default = null;
@@ -1308,6 +1685,20 @@ let
         Whole image reference, replacing the catalogue's repository plus `version`. Set it to PIN
         BY DIGEST, which is the only way two syncs of an identical rendered tree cannot run
         different code — the grammar warns while it is unpinned.
+      '';
+    };
+
+    manifests = lib.mkOption {
+      type = lib.types.listOf lib.types.str;
+      default = [ ];
+      description = ''
+        Whole objects delivered under this workload's Application when its catalogue entry
+        dispatches to the `manifest` kind. The factory treats rendered charts and custom resources
+        alike: both are opaque YAML whose schema belongs to the producer, not to nixk3s.
+
+        Refused on `app` and `reference` entries. An empty list on a manifest entry deliberately
+        renders no Application and warns; that is the supported declaration for something another
+        module in the same environment delivers.
       '';
     };
 
@@ -1606,10 +1997,121 @@ let
       description = "Extra entrypoint arguments, appended to whatever the catalogue supplies.";
     };
   };
+
+  optionsForRoot = spec:
+    let
+      all = lib.attrNames commonOptions;
+      enabled =
+        if spec.enabledOptions != null then spec.enabledOptions
+        else lib.subtractLists spec.disabledOptions all;
+      unknownEnabled = lib.subtractLists all enabled;
+      unknownDisabled = lib.subtractLists all spec.disabledOptions;
+      unknown = lib.unique (unknownEnabled ++ unknownDisabled);
+      selectorCollidesWithCommon = spec.entry == null && lib.elem spec.selector all;
+      extraDefinesSelector =
+        spec.entry == null && builtins.hasAttr spec.selector spec.extraOptions;
+      selectorOption = lib.optionalAttrs (spec.entry == null) {
+        ${spec.selector} = lib.mkOption ({
+          type = lib.types.enum (lib.attrNames spec.catalogue);
+          description =
+            "Which entry from this root's catalogue the workload runs. Available: "
+            + lib.concatStringsSep ", " (lib.attrNames spec.catalogue) + ".";
+        } // lib.optionalAttrs (spec.selectorDefault != null) {
+          default = spec.selectorDefault;
+        });
+      };
+    in
+    if spec.enabledOptions != null && spec.disabledOptions != [ ] then
+      throw "mkConsumerModule: root `${spec.rootName}` may set `enabledOptions` or `disabledOptions`, never both"
+    else if selectorCollidesWithCommon then
+      throw ("mkConsumerModule: selector `" + spec.selector + "` for root `${spec.rootName}` "
+        + "collides with a common workload option; a selector must have its own distinct name")
+    else if extraDefinesSelector then
+      throw ("mkConsumerModule: extraOptions for root `${spec.rootName}` define its selector `"
+        + spec.selector + "`; selector options are owned by the catalogue root")
+    else if unknown != [ ] then
+      throw ("mkConsumerModule: root `${spec.rootName}` names unknown common options: "
+        + lib.concatStringsSep ", " unknown)
+    else
+      # `enable` is structural and never suppressible. A root may remove a cluster term entirely
+      # (CI runners have no `slot` or `exposure`; category-routed apps have no `namespace`) by
+      # leaving it out of `enabledOptions`, which makes writing it an UNKNOWN OPTION rather than a
+      # value a later assertion merely dislikes.
+      lib.getAttrs (lib.unique ([ "enable" ] ++ enabled)) commonOptions
+      // selectorOption
+      // spec.extraOptions;
+
+  rootOption = rootName: spec:
+    lib.mkOption {
+      type = lib.types.attrsOf (lib.types.submodule (submodule@{ name, ... }:
+        let
+          declaration = submodule.config;
+          w = workloadDefaults // declaration;
+          entry = entryOf spec declaration;
+          selected = selectionOf spec declaration;
+          base = {
+            inherit name entry selected platform spec;
+            consumer = cfg;
+            moduleConfig = config;
+            inherit w declaration;
+            root = rootName;
+          };
+          context = base // { kind = spec.kind base; };
+          defaults = spec.defaults context;
+          forbiddenDefaults = [ "enable" ] ++ lib.optional (spec.entry == null) spec.selector;
+          checkedDefaults =
+            if !(lib.isAttrs defaults) then
+              throw "mkConsumerModule: defaults for root `${rootName}` must return an attribute set"
+            else
+              let collisions = lib.intersectLists forbiddenDefaults (lib.attrNames defaults); in
+              if collisions != [ ] then
+                throw ("mkConsumerModule: defaults for root `${rootName}` may not define "
+                  + lib.concatMapStringsSep ", " (n: "`${n}`") collisions
+                  + "; use `enableByDefault` or `selectorDefault` for those fixed-point inputs")
+              else defaults;
+        in {
+          options = optionsForRoot spec;
+          config = lib.mkMerge [
+            { enable = lib.mkDefault (spec.enableByDefault context); }
+            (lib.mapAttrs (_: value: lib.mkDefault value) checkedDefaults)
+          ];
+        }));
+      default = { };
+      description = if spec.description != null then spec.description else ''
+        Workloads from `${rootName}`, keyed by a name of your choosing. The key is the workload's
+        identity; its selected catalogue entry decides whether it renders through the app grammar,
+        as opaque manifests, or as a reference that deliberately renders nothing.
+      '';
+    };
+
+  reservedRootNames = [ platformOption "clusterSlots" "renderedByGrammar" "renderedDirectly" "notRendered" ];
+  collidingRootNames = lib.intersectLists reservedRootNames (lib.attrNames rootSpecs);
+  builtInPlatformOptionNames =
+    [ "project" "origin" ] ++ lib.optional (anyRootUsesCommonOption "namespace") "namespace";
+  extraPlatformCollisions = lib.intersectLists
+    builtInPlatformOptionNames
+    (lib.attrNames extraPlatformOptions);
+  checkedExtraPlatformOptions =
+    if extraPlatformCollisions != [ ] then
+      throw ("mkConsumerModule: extraPlatformOptions collide with built-in options: "
+        + lib.concatStringsSep ", " extraPlatformCollisions)
+    else extraPlatformOptions;
+  extraNamespaceCollisions = lib.intersectLists
+    (reservedRootNames ++ lib.attrNames rootSpecs)
+    (lib.attrNames extraNamespaceOptions);
+  checkedExtraNamespaceOptions =
+    if extraNamespaceCollisions != [ ] then
+      throw ("mkConsumerModule: extraNamespaceOptions collide with built-ins or roots: "
+        + lib.concatStringsSep ", " extraNamespaceCollisions)
+    else extraNamespaceOptions;
+  rootOptionDeclarations =
+    if collidingRootNames != [ ] then
+      throw ("mkConsumerModule: roots use reserved names: " + lib.concatStringsSep ", " collidingRootNames)
+    else lib.mapAttrs rootOption rootSpecs;
 in
 {
   options.${namespace} = {
-    ${platformOption} = {
+    ${platformOption} = (lib.optionalAttrs (anyRootUsesCommonOption "namespace") {
       namespace = lib.mkOption {
         type = lib.types.str;
         description = ''
@@ -1621,7 +2123,7 @@ in
           repository knows what its software IS and never where anybody puts it.
         '';
       };
-
+    }) // {
       project = lib.mkOption {
         type = lib.types.str;
         description = ''
@@ -1644,25 +2146,15 @@ in
           own band would be asserting a fleet's addressing policy from outside the fleet.
         '';
       };
-    };
-
-    ${root} = lib.mkOption {
-      type = lib.types.attrsOf (lib.types.submodule {
-        options = commonOptions // extraOptions;
-      });
-      default = { };
-      description = ''
-        Workloads from this repository's catalogue that run in the cluster, keyed by a name of your
-        choosing. The key is the workload's name; `${selector}` says which catalogue entry it runs,
-        so the same software can run twice under two names.
-      '';
-    };
+    } // checkedExtraPlatformOptions;
 
     clusterSlots = lib.mkOption {
       type = lib.types.attrsOf lib.types.ints.unsigned;
       readOnly = true;
       default = lib.listToAttrs
-        (map (x: lib.nameValuePair x.name x.w.slot) (lib.filter (x: x.w.slot != null) workloads));
+        (map
+          (x: lib.nameValuePair x.name x.w.slot)
+          (lib.filter (x: (x.w.slot or null) != null) allWorkloads));
       defaultText = lib.literalExpression "every declared workload that claims a slot";
       description = ''
         workload -> the position it claims, for every workload here that claims one. Nothing is
@@ -1670,31 +2162,91 @@ in
         the consumer reads to build one.
       '';
     };
-  };
 
-  config = {
-    nixk3s.apps = lib.listToAttrs (map (x: lib.nameValuePair x.name (mkApp x)) workloads);
+    renderedByGrammar = lib.mkOption {
+      type = lib.types.listOf lib.types.str;
+      readOnly = true;
+      default = lib.sort (a: b: a < b) (map (x: x.name) workloads);
+      defaultText = lib.literalExpression "every enabled entry dispatched to `app`";
+      description = "Declarations rendered in full through the nixk3s app grammar.";
+    };
 
-    # `nixidy.assertions`, not the module system's own `assertions`: this renders into a nixidy
-    # environment, which has no NixOS-style assertion plumbing and would refuse the bare name.
-    nixidy.assertions =
-      stateAssertions
-      ++ probeAssertions
-      ++ credentialAssertions
-      ++ imageAssertions
-      ++ idleAssertions
-      ++ replicaAssertions
-      ++ containerAssertions
-      ++ volumeNameAssertions
-      ++ authAssertions
-      ++ nestingAssertions
-      ++ identityAssertions
-      ++ requiresAssertions
-      ++ publicUrlAssertions
-      ++ anchorAssertions
-      ++ slotAssertions
-      ++ extraAssertions workloads;
+    renderedDirectly = lib.mkOption {
+      type = lib.types.listOf lib.types.str;
+      readOnly = true;
+      default = lib.sort (a: b: a < b)
+        (map (x: x.name) (lib.filter (x: x.spec.manifestsOf x != [ ]) manifestWorkloads));
+      defaultText = lib.literalExpression "every enabled `manifest` entry carrying at least one object";
+      description = "Declarations delivered as opaque manifests rather than through the app grammar.";
+    };
 
-    nixidy.warnings = builtinWarnings ++ nestingWarnings ++ idleWarnings ++ authWarnings ++ extraWarnings workloads;
-  };
+    notRendered = lib.mkOption {
+      type = lib.types.listOf lib.types.str;
+      readOnly = true;
+      default = lib.sort (a: b: a < b) (map (x: x.name) referenceWorkloads);
+      defaultText = lib.literalExpression "every enabled entry dispatched to `reference`";
+      description = "Declarations that deliberately render no object, but remain available to interlocks.";
+    };
+  } // rootOptionDeclarations // checkedExtraNamespaceOptions;
+
+  config = lib.mkMerge [
+    {
+      nixk3s.apps = lib.listToAttrs (map (x: lib.nameValuePair x.name (mkApp x)) workloads);
+
+      applications = lib.listToAttrs (map
+        (x: lib.nameValuePair (renderNameOf x) (mkManifestApplication x))
+        (lib.filter (x: x.spec.manifestsOf x != [ ]) manifestWorkloads));
+
+      # `nixidy.assertions`, not the module system's own `assertions`: this renders into a nixidy
+      # environment, which has no NixOS-style assertion plumbing and would refuse the bare name.
+      nixidy.assertions =
+        stateAssertions
+        ++ probeAssertions
+        ++ credentialAssertions
+        ++ imageAssertions
+        ++ idleAssertions
+        ++ replicaAssertions
+        ++ containerAssertions
+        ++ volumeNameAssertions
+        ++ authAssertions
+        ++ nestingAssertions
+        ++ identityAssertions
+        ++ requiresAssertions
+        ++ publicUrlAssertions
+        ++ anchorAssertions
+        ++ slotAssertions
+        ++ addressingAvailabilityAssertions
+        ++ dispatchAssertions
+        ++ declarationNameAssertions
+        ++ renderNameAssertions
+        ++ applicationKeyAssertions
+        ++ rootAssertions
+        ++ extraAssertions allWorkloads;
+
+      nixidy.warnings =
+        builtinWarnings
+        ++ nestingWarnings
+        ++ idleWarnings
+        ++ authWarnings
+        ++ dispatchWarnings
+        ++ rootWarnings
+        ++ extraWarnings allWorkloads;
+    }
+    # Addressing counts occupancy from grammar apps automatically. A manifest or reference lives
+    # below that grammar and would otherwise advertise its real slot as free. Emit reservations
+    # only when the consumer has opted into the addressing vocabulary by naming an origin -- the
+    # same condition under which grammar apps receive `origin` and `slot` above.
+    (lib.optionalAttrs addressingIsDefined {
+      nixk3s.addressing.reservations = lib.mkIf
+        (platform.origin != null && nonGrammarSlotWorkloads != [ ])
+        (lib.listToAttrs (map
+          (x: lib.nameValuePair x.name {
+            slot = x.w.slot;
+            origin = platform.origin;
+            note = "${x.root}.${x.name}, delivered as ${x.kind} by ${namespace}";
+          })
+          nonGrammarSlotWorkloads));
+    })
+    (extraConfig allWorkloads)
+  ];
 }
