@@ -157,6 +157,12 @@ let
     modules = [
       appsModule
       flatPlatformConsumer
+      ({ options, ... }: {
+        nixidy.assertions = [{
+          assertion = !(options.nixflatplatform ? clusterPlatform);
+          message = "fixture: a flat domain platform must not publish nested platform options";
+        }];
+      })
       {
         nixidy.target.repository = "https://example.com/example-org/example-gitops.git";
         nixidy.target.branch = "main";
@@ -371,8 +377,11 @@ let
       && rejectsOptionPath [ "nixinvalidpath" 1 ];
 
     "a typed domain platform can leave no nested platform option subtree" =
-      !(flatPlatformEnv.options.nixflatplatform ? clusterPlatform)
-      && !(flatPlatformCfg.nixflatplatform ? clusterPlatform)
+      !(flatPlatformCfg.nixflatplatform ? clusterPlatform)
+      && lib.any
+        (a: a.assertion
+          && a.message == "fixture: a flat domain platform must not publish nested platform options")
+        flatPlatformCfg.nixidy.assertions
       && flatPlatformCfg.nixk3s.apps.one.namespace == "example-flat-platform"
       && flatPlatformCfg.nixk3s.apps.one.project == "example-flat-project";
 
