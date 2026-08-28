@@ -91,6 +91,15 @@ let
     in
     !result.success;
 
+  rejectsSelectorConsumer = extra:
+    let
+      module = mkSelectorConsumer "nixinvalidconsumer" "service" extra;
+      result = builtins.tryEval (builtins.deepSeq
+        (module { config = { }; inherit lib; options = { }; }).options
+        true);
+    in
+    !result.success;
+
   nestedConsumerModule = mkConsumerModule {
     namespace = "nixnested";
     optionPath = [ "nixnested" "cluster" ];
@@ -123,6 +132,47 @@ let
       }
     ];
   }).config;
+
+  flatPlatformConsumer = mkConsumerModule {
+    namespace = "nixflatplatform";
+    publishPlatformOptions = false;
+    platformOf = { consumer, ... }: {
+      inherit (consumer) namespace project origin;
+    };
+    originOptionPath = [ "nixflatplatform" "origin" ];
+    catalogue = selectorCatalogue;
+    selector = "service";
+    extraNamespaceOptions = {
+      namespace = lib.mkOption { type = lib.types.str; };
+      project = lib.mkOption { type = lib.types.str; };
+      origin = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+      };
+    };
+  };
+
+  flatPlatformEnv = nixidy.lib.mkEnv {
+    inherit pkgs;
+    modules = [
+      appsModule
+      flatPlatformConsumer
+      {
+        nixidy.target.repository = "https://example.com/example-org/example-gitops.git";
+        nixidy.target.branch = "main";
+        nixflatplatform = {
+          namespace = "example-flat-platform";
+          project = "example-flat-project";
+          applications.one = {
+            service = "only";
+            version = "1.0.0";
+          };
+        };
+      }
+    ];
+  };
+
+  flatPlatformCfg = flatPlatformEnv.config;
 
   # A consumer may force the generated app while collecting a wholly separate assertion. Missing
   # image inputs must still be reported by the factory's own guard rather than throwing while the
@@ -161,15 +211,16 @@ let
   missingVersionIsTotal =
     let
       result = builtins.tryEval (
-        let assertions = missingVersionEnv.config.nixidy.assertions; in
-        builtins.deepSeq assertions (
-          lib.any
+        let
+          assertions = missingVersionEnv.config.nixidy.assertions;
+          expected = lib.any
             (a: !a.assertion && lib.hasInfix "says neither which version" a.message)
-            assertions
-          && lib.any
+            assertions;
+          unrelated = lib.any
             (a: !a.assertion && lib.hasInfix "forced by an unrelated assertion" a.message)
-            assertions
-        ));
+            assertions;
+        in
+        builtins.deepSeq [ expected unrelated ] (expected && unrelated));
     in
     result.success && result.value;
 
@@ -318,6 +369,20 @@ let
       && rejectsOptionPath [ ]
       && rejectsOptionPath [ "nixinvalidpath" "" ]
       && rejectsOptionPath [ "nixinvalidpath" 1 ];
+
+    "a typed domain platform can leave no nested platform option subtree" =
+      !(flatPlatformEnv.options.nixflatplatform ? clusterPlatform)
+      && !(flatPlatformCfg.nixflatplatform ? clusterPlatform)
+      && flatPlatformCfg.nixk3s.apps.one.namespace == "example-flat-platform"
+      && flatPlatformCfg.nixk3s.apps.one.project == "example-flat-project";
+
+    "suppressing platform publication requires a resolver" =
+      rejectsSelectorConsumer { publishPlatformOptions = false; };
+
+    "ordinary extra platform options still cannot replace built-in names" =
+      rejectsSelectorConsumer {
+        extraPlatformOptions.project = lib.mkOption { type = lib.types.str; };
+      };
 
     "missing image inputs remain total when another assertion forces the generated app" =
       missingVersionIsTotal;

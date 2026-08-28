@@ -96,6 +96,9 @@ in
 , root ? "applications"
 , selector ? "app"
 , platformOption ? "clusterPlatform"
+, publishPlatformOptions ? true
+, platformOf ? null
+, originOptionPath ? null
 , extraPlatformOptions ? { }
 , extraNamespaceOptions ? { }
 , extraOptions ? { }
@@ -108,19 +111,40 @@ in
 { config, lib, options, ... }:
 
 let
-  checkedOptionPath =
-    if !builtins.isList optionPath
-      || optionPath == [ ]
-      || !(lib.all (part: lib.isString part && part != "") optionPath)
-    then throw "mkConsumerModule: optionPath must be a non-empty list of non-empty strings"
-    else optionPath;
+  checkedPath = name: path:
+    if !builtins.isList path
+      || path == [ ]
+      || !(lib.all (part: lib.isString part && part != "") path)
+    then throw "mkConsumerModule: ${name} must be a non-empty list of non-empty strings"
+    else path;
+  checkedOptionPath = checkedPath "optionPath" optionPath;
+  checkedOriginOptionPath = checkedPath "originOptionPath"
+    (if originOptionPath == null
+    then checkedOptionPath ++ [ platformOption "origin" ]
+    else originOptionPath);
   showPathPart = part:
     if builtins.match "[A-Za-z_][A-Za-z0-9_-]*" part != null
     then part
     else builtins.toJSON part;
   optionPathText = lib.concatMapStringsSep "." showPathPart checkedOptionPath;
+  originOptionPathText = lib.concatMapStringsSep "." showPathPart checkedOriginOptionPath;
   cfg = lib.getAttrFromPath checkedOptionPath config;
-  platform = cfg.${platformOption};
+  rawPlatform =
+    if platformOf == null
+    then cfg.${platformOption}
+    else platformOf { consumer = cfg; moduleConfig = config; };
+  platform =
+    if !lib.isAttrs rawPlatform then
+      throw "mkConsumerModule: platformOf must return an attribute set"
+    else if !(rawPlatform ? project) || !lib.isString rawPlatform.project then
+      throw "mkConsumerModule: platformOf must return a string `project`"
+    else if !(rawPlatform ? origin)
+      || !(rawPlatform.origin == null || lib.isString rawPlatform.origin) then
+      throw "mkConsumerModule: platformOf must return a null or string `origin`"
+    else if anyRootUsesCommonOption "namespace"
+      && (!(rawPlatform ? namespace) || !lib.isString rawPlatform.namespace) then
+      throw "mkConsumerModule: platformOf must return a string `namespace` when a root exposes it"
+    else rawPlatform;
   addressingIsDefined = lib.hasAttrByPath [ "nixk3s" "addressing" "reservations" ] options;
 
   # Roots may remove a term structurally. The renderer still works against one total internal
@@ -209,6 +233,7 @@ let
       entry = r.entry or null;
       selector = r.selector or "app";
       selectorDefault = r.selectorDefault or null;
+      selectorDescription = r.selectorDescription or null;
       enabledOptions = r.enabledOptions or null;
       disabledOptions = r.disabledOptions or [ ];
       extraOptions = r.extraOptions or { };
@@ -231,6 +256,7 @@ let
       assertions = r.assertions or (_: [ ]);
       warnings = r.warnings or (_: [ ]);
       description = r.description or null;
+      example = r.example or null;
     };
 
   rootSpecs = lib.mapAttrs normaliseRoot rawRoots;
@@ -297,7 +323,7 @@ let
     {
       assertion = false;
       message =
-        "${namespace}: manifest/reference workloads claim slots while `${optionPathText}.${platformOption}.origin` "
+        "${namespace}: manifest/reference workloads claim slots while `${originOptionPathText}` "
         + "is set, but the nixk3s addressing module is not composed. Their occupancy cannot be "
         + "published as reservations, so live slots would appear free.";
     };
@@ -1502,7 +1528,7 @@ let
           when = (w.slot or null) != null && platform.origin == null;
           message =
             "${namespace}: workload `${name}` claims slot ${toString (w.slot or null)}, and "
-            + "`${optionPathText}.${platformOption}.origin` is unset — so the number is checked for "
+            + "`${originOptionPathText}` is unset — so the number is checked for "
             + "collisions inside this repository and by nothing for which RANGE it may come from.";
         }
         {
@@ -2045,8 +2071,11 @@ let
         ${spec.selector} = lib.mkOption ({
           type = lib.types.enum (lib.attrNames spec.catalogue);
           description =
-            "Which entry from this root's catalogue the workload runs. Available: "
-            + lib.concatStringsSep ", " (lib.attrNames spec.catalogue) + ".";
+            if spec.selectorDescription != null
+            then spec.selectorDescription
+            else
+              "Which entry from this root's catalogue the workload runs. Available: "
+              + lib.concatStringsSep ", " (lib.attrNames spec.catalogue) + ".";
         } // lib.optionalAttrs (spec.selectorDefault != null) {
           default = spec.selectorDefault;
         });
@@ -2073,7 +2102,7 @@ let
       // spec.extraOptions;
 
   rootOption = rootName: spec:
-    lib.mkOption {
+    lib.mkOption ({
       type = lib.types.attrsOf (lib.types.submodule (submodule@{ name, ... }:
         let
           declaration = submodule.config;
@@ -2113,7 +2142,7 @@ let
         identity; its selected catalogue entry decides whether it renders through the app grammar,
         as opaque manifests, or as a reference that deliberately renders nothing.
       '';
-    };
+    } // lib.optionalAttrs (spec.example != null) { inherit (spec) example; });
 
   reservedRootNames = [ platformOption "clusterSlots" "renderedByGrammar" "renderedDirectly" "notRendered" ];
   collidingRootNames = lib.intersectLists reservedRootNames (lib.attrNames rootSpecs);
@@ -2127,6 +2156,14 @@ let
       throw ("mkConsumerModule: extraPlatformOptions collide with built-in options: "
         + lib.concatStringsSep ", " extraPlatformCollisions)
     else extraPlatformOptions;
+  checkedPublishPlatformOptions =
+    if !lib.isBool publishPlatformOptions then
+      throw "mkConsumerModule: publishPlatformOptions must be a boolean"
+    else if !publishPlatformOptions && platformOf == null then
+      throw "mkConsumerModule: platformOf is required when publishPlatformOptions is false"
+    else if !publishPlatformOptions && extraPlatformOptions != { } then
+      throw "mkConsumerModule: extraPlatformOptions require published platform options"
+    else publishPlatformOptions;
   extraNamespaceCollisions = lib.intersectLists
     (reservedRootNames ++ lib.attrNames rootSpecs)
     (lib.attrNames extraNamespaceOptions);
@@ -2139,10 +2176,7 @@ let
     if collidingRootNames != [ ] then
       throw ("mkConsumerModule: roots use reserved names: " + lib.concatStringsSep ", " collidingRootNames)
     else lib.mapAttrs rootOption rootSpecs;
-in
-{
-  options = lib.setAttrByPath checkedOptionPath ({
-    ${platformOption} = (lib.optionalAttrs (anyRootUsesCommonOption "namespace") {
+  builtInPlatformOptions = (lib.optionalAttrs (anyRootUsesCommonOption "namespace") {
       namespace = lib.mkOption {
         type = lib.types.str;
         description = ''
@@ -2177,7 +2211,13 @@ in
           own band would be asserting a fleet's addressing policy from outside the fleet.
         '';
       };
-    } // checkedExtraPlatformOptions;
+    };
+  platformOptionDeclarations = lib.optionalAttrs checkedPublishPlatformOptions {
+    ${platformOption} = builtInPlatformOptions // checkedExtraPlatformOptions;
+  };
+in
+{
+  options = lib.setAttrByPath checkedOptionPath (platformOptionDeclarations // {
 
     clusterSlots = lib.mkOption {
       type = lib.types.attrsOf lib.types.ints.unsigned;

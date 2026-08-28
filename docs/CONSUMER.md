@@ -35,6 +35,34 @@ This declares `nixoffice.cluster.clusterPlatform` and `nixoffice.cluster.applica
 diagnostics still begin with `nixoffice:`. `optionPath` defaults to `[ namespace ]` and must be a
 non-empty list of non-empty strings.
 
+An established schema may already keep its platform values flat and have no compatible place for
+the factory's nested platform node. In that case the consumer can suppress only that publication
+and resolve the same internal record from its typed domain options:
+
+```nix
+nixk3s.lib.mkConsumerModule {
+  namespace = "nixexample";
+  publishPlatformOptions = false;
+  platformOf = { consumer, ... }: {
+    inherit (consumer) namespace project origin;
+  };
+  originOptionPath = [ "nixexample" "origin" ];
+  extraNamespaceOptions = {
+    namespace = lib.mkOption { type = lib.types.str; };
+    project = lib.mkOption { type = lib.types.str; };
+    origin = lib.mkOption { type = lib.types.nullOr lib.types.str; default = null; };
+  };
+  catalogue = self.lib.applications;
+}
+```
+
+`platformOf` is required when `publishPlatformOptions = false`; it receives `consumer` and
+`moduleConfig` and must return string `project`, nullable-string `origin`, and string `namespace`
+when any root exposes the common namespace term. `extraPlatformOptions` are unavailable in this
+mode because there is deliberately no platform subtree to hold them. `originOptionPath` keeps the
+shared slot diagnostic pointed at the real option; it otherwise defaults to the published
+`${platformOption}.origin` path.
+
 ## Several roots and mixed delivery kinds
 
 A database tier or CI platform is not one homogeneous table. An instance can be a typed workload
@@ -98,7 +126,7 @@ the resulting YAML.
 
 | Field | Meaning |
 |---|---|
-| `catalogue` + `selector` | Select an entry from an attrset. `selectorDefault` is optional. Mutually exclusive with `entry`; the selector name must not collide with a common or extra option. |
+| `catalogue` + `selector` | Select an entry from an attrset. `selectorDefault` and `selectorDescription` are optional. Mutually exclusive with `entry`; the selector name must not collide with a common or extra option. |
 | `entry` | One fixed synthetic entry; no selector option is declared. |
 | `kind context` | Returns `app`, `manifest`, or `reference`. |
 | `enableByDefault context` | Entry-derived default for `enable`; the declaration can override it. |
@@ -111,6 +139,7 @@ the resulting YAML.
 | `extend`, `extendManifest` | Add the genuinely domain-specific tail to the typed or manifest result. |
 | `extraOptions` | Extra declaration options for this root. |
 | `assertions`, `warnings` | Root-local guards over the root's enabled workload contexts. |
+| `description`, `example` | Documentation carried by the root option without changing its renderer. |
 
 `extraOptions` overlays the common option surface for two deliberate, distinct cases. Overlaying an
 ENABLED common name refines its module contract while keeping the shared renderer and guards; for
