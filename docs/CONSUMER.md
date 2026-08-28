@@ -70,7 +70,7 @@ The three kinds are intentionally few:
 
 | Kind | Result |
 |---|---|
-| `app` | A full `nixk3s.apps.<name>` declaration. Whole `manifests` are refused. |
+| `app` | A full `nixk3s.apps.<resolved-name>` declaration. Whole `manifests` are refused. |
 | `manifest` | One Argo CD Application carrying opaque YAML, with server-side apply and diff. An empty list renders nothing and warns. |
 | `reference` | No object. The declaration remains visible to domain interlocks and in `notRendered`. |
 
@@ -115,9 +115,10 @@ That responsibility transfer is concrete for the incompatible shapes found in ex
 
 This is an explicit transfer of the renderer and safety boundary, not an untyped fallback.
 
-Extensions own domain payload, not identity or tenancy. After `extend`, the factory reapplies the
-resolved app `name`, `namespace`, `project`, and `createNamespace`, because its collision and
-namespace-anchor guards reason about those callback results. After `extendManifest`, it likewise
+Extensions own domain payload, not identity or tenancy. After `extend`, the factory keys the app
+grammar declaration by the resolved `name` and reapplies that `name`, `namespace`, `project`, and
+`createNamespace`, because the grammar and the factory's collision and namespace-anchor guards
+reason about those callback results. After `extendManifest`, it likewise
 reapplies `namespace`, `project`, `createNamespace = false`, exact `yamls`, server-side apply, and
 server-side diff. A direct Application has no second name field: its module key is already the
 identity returned by `nameOf`.
