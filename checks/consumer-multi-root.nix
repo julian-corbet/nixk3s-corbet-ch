@@ -91,15 +91,6 @@ let
     in
     !result.success;
 
-  rejectsSelectorConsumer = extra:
-    let
-      module = mkSelectorConsumer "nixinvalidconsumer" "service" extra;
-      result = builtins.tryEval (builtins.deepSeq
-        (module { config = { }; inherit lib; options = { }; }).options
-        true);
-    in
-    !result.success;
-
   nestedConsumerModule = mkConsumerModule {
     namespace = "nixnested";
     optionPath = [ "nixnested" "cluster" ];
@@ -386,12 +377,18 @@ let
       && flatPlatformCfg.nixk3s.apps.one.project == "example-flat-project";
 
     "suppressing platform publication requires a resolver" =
-      rejectsSelectorConsumer { publishPlatformOptions = false; };
+      !selectorFactoryEvaluates
+        (mkSelectorConsumer "nixinvalidplatformresolver" "service" {
+          publishPlatformOptions = false;
+        })
+        (selectorValues "nixinvalidplatformresolver" "service");
 
     "ordinary extra platform options still cannot replace built-in names" =
-      rejectsSelectorConsumer {
-        extraPlatformOptions.project = lib.mkOption { type = lib.types.str; };
-      };
+      !selectorFactoryEvaluates
+        (mkSelectorConsumer "nixinvalidplatformcollision" "service" {
+          extraPlatformOptions.project = lib.mkOption { type = lib.types.str; };
+        })
+        (selectorValues "nixinvalidplatformcollision" "service");
 
     "missing image inputs remain total when another assertion forces the generated app" =
       missingVersionIsTotal;
