@@ -1,0 +1,47 @@
+name: lock metadata
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Git ref to prefetch
+        required: true
+        default: main
+
+permissions:
+  contents: read
+
+jobs:
+  metadata:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+
+      - uses: cachix/install-nix-action@v27
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      - name: Resolve lock metadata
+        env:
+          TARGET_REF: ${{ inputs.ref }}
+        run: |
+          set -euo pipefail
+          rev="$(git rev-parse HEAD)"
+          last_modified="$(git show -s --format=%ct HEAD)"
+          nix flake prefetch --json "github:${GITHUB_REPOSITORY}/${TARGET_REF}" > prefetch.json
+          jq \
+            --arg rev "$rev" \
+            --argjson lastModified "$last_modified" \
+            '{ rev: $rev, lastModified: $lastModified, prefetch: . }' \
+            prefetch.json > lock-metadata.json
+          cat lock-metadata.json
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lock-metadata
+          path: lock-metadata.json
+          if-no-files-found: error
