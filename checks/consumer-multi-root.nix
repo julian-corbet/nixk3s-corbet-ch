@@ -124,6 +124,55 @@ let
     ];
   }).config;
 
+  # A consumer may force the generated app while collecting a wholly separate assertion. Missing
+  # image inputs must still be reported by the factory's own guard rather than throwing while the
+  # app is constructed and hiding both diagnostics behind a null interpolation.
+  missingVersionConsumer = mkConsumerModule {
+    namespace = "nixmissingversion";
+    catalogue = selectorCatalogue;
+    selector = "service";
+  };
+
+  missingVersionEnv = nixidy.lib.mkEnv {
+    inherit pkgs;
+    modules = [
+      appsModule
+      missingVersionConsumer
+      ({ config, ... }: {
+        nixidy.assertions = [{
+          assertion = builtins.deepSeq config.nixk3s.apps.one false;
+          message = "fixture: the generated app was forced by an unrelated assertion";
+        }];
+      })
+      {
+        nixidy.target.repository = "https://example.com/example-org/example-gitops.git";
+        nixidy.target.branch = "main";
+        nixmissingversion = {
+          clusterPlatform = {
+            namespace = "example-missing-version";
+            project = "example";
+          };
+          applications.one.service = "only";
+        };
+      }
+    ];
+  };
+
+  missingVersionIsTotal =
+    let
+      result = builtins.tryEval (
+        let assertions = missingVersionEnv.config.nixidy.assertions; in
+        builtins.deepSeq assertions (
+          lib.any
+            (a: !a.assertion && lib.hasInfix "says neither which version" a.message)
+            assertions
+          && lib.any
+            (a: !a.assertion && lib.hasInfix "forced by an unrelated assertion" a.message)
+            assertions
+        ));
+    in
+    result.success && result.value;
+
   # Some established consumers use semantic camelCase state keys in their public declaration
   # contract even though a Kubernetes volume name must be a DNS label. The root resolver keeps
   # those two identities separate: declarations stay source-compatible while every rendered use
@@ -269,6 +318,9 @@ let
       && rejectsOptionPath [ ]
       && rejectsOptionPath [ "nixinvalidpath" "" ]
       && rejectsOptionPath [ "nixinvalidpath" 1 ];
+
+    "missing image inputs remain total when another assertion forces the generated app" =
+      missingVersionIsTotal;
 
     "a root resolves legacy camelCase state keys to explicit Kubernetes volume names everywhere" =
       volumeRenders catalogueVolumeNameOf

@@ -311,7 +311,13 @@ let
   # below rather than here: reaching for `"${null}:${version}"` replaces a sentence somebody can
   # act on with a coercion error.
   imageOf = entry: w:
-    if w.image != null then w.image else "${entry.image}:${w.version}";
+    if w.image != null then w.image
+    else if (entry.image or null) != null && w.version != null
+    then "${entry.image}:${w.version}"
+    # The assertions below own both missing halves. Keep construction total so a consumer that
+    # forces the generated app while collecting another assertion still reaches those sentences
+    # instead of dying first while interpolating `null`.
+    else "";
 
   portsOf = entry: lib.mapAttrs (_: normalisePort) entry.ports;
 
