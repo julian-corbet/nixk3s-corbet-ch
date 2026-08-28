@@ -141,10 +141,10 @@ let
 
     "entries from two roots reach the app grammar" =
       cfg.nixmulti.renderedByGrammar == [ "agent" "web" ]
-      && names (lib.attrNames cfg.nixk3s.apps) == [ "agent" "frontend" ];
+      && names (lib.attrNames cfg.nixk3s.apps) == [ "agent" "web" ];
 
     "extraConfig can publish a sibling nixk3s subtree without replacing grammar apps" =
-      names (lib.attrNames cfg.nixk3s.apps) == [ "agent" "frontend" ]
+      names (lib.attrNames cfg.nixk3s.apps) == [ "agent" "web" ]
       && names cfg.nixk3s.consumerReport == [
         "jobs.zz-nightly"
         "services.external"
@@ -172,10 +172,10 @@ let
       && cfg.applications.vendor.yamls == vendorManifests;
 
     "extensions cannot override resolver identity, tenancy, or direct-delivery safety" =
-      cfg.nixk3s.apps.frontend.name == "frontend"
-      && cfg.nixk3s.apps.frontend.namespace == "example-control"
-      && cfg.nixk3s.apps.frontend.project == "example"
-      && cfg.nixk3s.apps.frontend.createNamespace
+      cfg.nixk3s.apps.web.name == "frontend"
+      && cfg.nixk3s.apps.web.namespace == "example-control"
+      && cfg.nixk3s.apps.web.project == "example"
+      && cfg.nixk3s.apps.web.createNamespace
       && cfg.applications.vendor.namespace == "example-control"
       && cfg.applications.vendor.project == "example"
       && !cfg.applications.vendor.createNamespace
@@ -184,8 +184,8 @@ let
       && cfg.applications.vendor.compareOptions.serverSideDiff == "ServerSideDiff=true";
 
     "a mixed root can replace common credentials with roles and render them through extend" =
-      cfg.nixk3s.apps.frontend.secrets.admin.secret == "example-web-credentials"
-      && cfg.nixk3s.apps.frontend.secrets.admin.env.WEB_TOKEN == "token"
+      cfg.nixk3s.apps.web.secrets.admin.secret == "example-web-credentials"
+      && cfg.nixk3s.apps.web.secrets.admin.env.WEB_TOKEN == "token"
       && cfg.nixmulti.services.vendor.credentials.chartToken.key == "chart-token"
       && cfg.applications.vendor.yamls == vendorManifests;
 
@@ -242,16 +242,15 @@ let
       && !(cfg.nixk3s.apps ? aardvark);
 
     "an entry supplies a deployment default without putting the value in the catalogue renderer" =
-      cfg.nixk3s.apps.frontend.exposure == "nb"
-      && (configOf (with' { nixmulti.services.web.exposure = "public"; })).nixk3s.apps.frontend.exposure
+      cfg.nixk3s.apps.web.exposure == "nb"
+      && (configOf (with' { nixmulti.services.web.exposure = "public"; })).nixk3s.apps.web.exposure
         == "public";
 
     "nameOf is the one resolved identity for grammar apps as well as direct manifests" =
-      cfg.nixk3s.apps.frontend.name == "frontend"
-      && !(cfg.nixk3s.apps ? web);
+      cfg.nixk3s.apps.web.name == "frontend";
 
     "namespaces are derived from catalogue planes, with no per-workload namespace option" =
-      cfg.nixk3s.apps.frontend.namespace == "example-control"
+      cfg.nixk3s.apps.web.namespace == "example-control"
       && cfg.nixk3s.apps.agent.namespace == "example-execution"
       && cfg.applications.zz-nightly.namespace == "example-control";
 
@@ -300,17 +299,13 @@ let
           };
         });
 
-    "a direct Application may use a grammar declaration's old name after nameOf rekeys it" =
-      renders
+    "a direct Application cannot merge into a grammar Application's declaration key" =
+      failsWith "Application option key `web`"
         (with' {
           nixmulti.services.shadow = {
             service = "vendor";
             objectName = "web";
             generatedManifests = [ oneManifest ];
-            credentials.chartToken = {
-              secret = "example-shadow-credentials";
-              key = "chart-token";
-            };
           };
         });
 

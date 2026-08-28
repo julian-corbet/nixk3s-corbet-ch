@@ -1395,6 +1395,24 @@ let
       })
       byName;
 
+  # The grammar keeps its module key at the declaration name while `app.name` may adopt a live
+  # object name. Direct Applications are keyed by the resolved name. Check that module-key space
+  # separately from rendered identity: otherwise `applications.web` from each route can merge into
+  # one malformed Application even when the two objects' resolved names differ.
+  applicationKeyOf = x: if isKind "app" x then x.name else renderNameOf x;
+  applicationKeyAssertions =
+    let byName = lib.groupBy applicationKeyOf renderedWorkloads; in
+    lib.mapAttrsToList
+      (name: xs: {
+        assertion = lib.length xs == 1;
+        message =
+          "${namespace}: Application option key `${name}` is produced by more than one declaration ("
+          + lib.concatMapStringsSep ", " (x: "`${x.root}.${x.name}`") xs
+          + "). Grammar Applications keep the declaration key even when `nameOf` resolves their "
+          + "object name; a direct Application may not merge into that module subtree.";
+      })
+      byName;
+
   rootAssertions = lib.concatLists (lib.mapAttrsToList
     (rootName: spec: spec.assertions (lib.filter (x: x.root == rootName) allWorkloads))
     rootSpecs);
@@ -2173,12 +2191,7 @@ in
 
   config = lib.mkMerge [
     {
-      # The app grammar uses its attribute key as an identity in addition to `app.name` (for
-      # example while finding the sole Namespace creator). Keep those two names identical. A
-      # declaration name remains the user's catalogue-table key and the reporting identity;
-      # `nameOf` is the one rendered identity for both grammar and direct deliveries.
-      nixk3s.apps = lib.listToAttrs
-        (map (x: lib.nameValuePair (renderNameOf x) (mkApp x)) workloads);
+      nixk3s.apps = lib.listToAttrs (map (x: lib.nameValuePair x.name (mkApp x)) workloads);
 
       applications = lib.listToAttrs (map
         (x: lib.nameValuePair (renderNameOf x) (mkManifestApplication x))
@@ -2206,6 +2219,7 @@ in
         ++ dispatchAssertions
         ++ declarationNameAssertions
         ++ renderNameAssertions
+        ++ applicationKeyAssertions
         ++ rootAssertions
         ++ extraAssertions allWorkloads;
 

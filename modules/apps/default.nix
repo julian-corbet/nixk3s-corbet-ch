@@ -262,9 +262,11 @@ let
   # Namespaces this render CREATES, and who creates them. Two Applications both
   # creating one Namespace is two Argo owners for one object; caught below.
   creatorsOf = namespace:
-    lib.attrNames (lib.filterAttrs
-      (_: app: app.createNamespace && app.namespace == namespace)
-      enabledApps);
+    map
+      (app: app.name)
+      (lib.attrValues (lib.filterAttrs
+        (_: app: app.createNamespace && app.namespace == namespace)
+        enabledApps));
 
   ## ---------------------------------------------------------------------
   ## Derived facts about the POD, now that it may hold more than one container

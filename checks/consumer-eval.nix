@@ -60,8 +60,7 @@ let
       emptyCfg.nixk3s.apps == { };
 
     "every declared workload reaches the grammar, and nothing else does" =
-      lib.sort (a: b: a < b) (lib.attrNames (mkEnv base).config.nixk3s.apps)
-        == [ "example-beta-renamed" "lock" "one" ];
+      lib.sort (a: b: a < b) (lib.attrNames (mkEnv base).config.nixk3s.apps) == [ "lock" "one" "two" ];
 
     # ── The split, refused in both directions ────────────────────────────────────────────────
     "a directory the catalogue names and nothing backs is refused" =
