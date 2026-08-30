@@ -471,6 +471,7 @@ let
       && volumeCfg.nixk3s.apps.two.companions.reader.mounts.data == [{
         mountPath = "/srv/reader/plugins";
         subPath = "plugins";
+        readOnly = false;
       }];
 
     "shared state refuses an unknown or chained owner" =
