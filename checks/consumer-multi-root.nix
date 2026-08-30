@@ -252,6 +252,24 @@ let
     }];
   };
 
+  volumeCatalogue.shared = {
+    image = "registry.example.com/example-org/shared-state";
+    ports = { };
+    primaryPort = null;
+    state = {
+      userfiles = "/srv/app/userfiles";
+      plugins = "/srv/app/plugins";
+      logs = "/srv/app/logs";
+    };
+    volumeNames.userfiles = "data";
+    companions.reader = {
+      image = null;
+      ports = { };
+      primaryPort = null;
+      mounts.plugins = [{ mountPath = "/srv/reader/plugins"; }];
+    };
+  };
+
   catalogueVolumeNameOf = { entry, ... }: key: entry.volumeNames.${key} or key;
 
   mkVolumeConsumer = resolver: mkConsumerModule {
@@ -279,6 +297,27 @@ let
           cacheData.hostPath = "/example/legacy/cache";
         };
       };
+      workloads.two = {
+        service = "shared";
+        version = "1.0.0";
+        state = {
+          userfiles = {
+            hostPath = "/example/shared";
+            subPath = "userfiles";
+            mountOrder = 0;
+          };
+          plugins = {
+            sharedWith = "userfiles";
+            subPath = "plugins";
+            mountOrder = 1;
+          };
+          logs = {
+            sharedWith = "userfiles";
+            subPath = "logs";
+            mountOrder = 2;
+          };
+        };
+      };
     };
   };
 
@@ -291,6 +330,11 @@ let
     (builtins.tryEval (builtins.seq (mkVolumeEnv resolver volumeValues).environmentPackage.drvPath true)).success;
 
   volumeCfg = (mkVolumeEnv catalogueVolumeNameOf volumeValues).config;
+
+  volumeWith = state: lib.recursiveUpdate volumeValues {
+    nixvolume.workloads.two.state = state;
+  };
+  sharedState = volumeValues.nixvolume.workloads.two.state;
 
   with' = f: lib.recursiveUpdate base f;
   configOf = v: (mkEnv v).config;
@@ -409,6 +453,47 @@ let
 
     "two root-resolved state keys colliding on one volume name are refused centrally" =
       failsWithUsing (mkVolumeEnv (_context: _key: "same")) "onto one volume name" volumeValues;
+
+    "semantic state directories can share one physical backing in declared mount order" =
+      volumeCfg.nixk3s.apps.two.state ? data
+      && lib.attrNames volumeCfg.nixk3s.apps.two.state == [ "data" ]
+      && volumeCfg.nixk3s.apps.two.state.data.hostPath == "/example/shared"
+      && map (m: m.mountPath) volumeCfg.nixk3s.apps.two.state.data.mounts == [
+        "/srv/app/userfiles"
+        "/srv/app/plugins"
+        "/srv/app/logs"
+      ]
+      && map (m: m.subPath) volumeCfg.nixk3s.apps.two.state.data.mounts == [
+        "userfiles"
+        "plugins"
+        "logs"
+      ]
+      && volumeCfg.nixk3s.apps.two.companions.reader.mounts.data == [{
+        mountPath = "/srv/reader/plugins";
+        subPath = "plugins";
+      }];
+
+    "shared state refuses an unknown or chained owner" =
+      failsWithUsing (mkVolumeEnv catalogueVolumeNameOf) "unknown, self-referential, or itself-shared"
+        (volumeWith (sharedState // { plugins.sharedWith = "missing"; }))
+      && failsWithUsing (mkVolumeEnv catalogueVolumeNameOf) "unknown, self-referential, or itself-shared"
+        (volumeWith (sharedState // { logs.sharedWith = "plugins"; }));
+
+    "shared state refuses a second physical backing" =
+      failsWithUsing (mkVolumeEnv catalogueVolumeNameOf) "both a `sharedWith` target and physical"
+        (volumeWith (sharedState // { plugins.hostPath = "/example/duplicate"; }));
+
+    "shared state refuses implicit roots and nondeterministic mount order" =
+      failsWithUsing (mkVolumeEnv catalogueVolumeNameOf) "every member both `subPath` and `mountOrder`"
+        (volumeWith (sharedState // { plugins.subPath = null; }))
+      && failsWithUsing (mkVolumeEnv catalogueVolumeNameOf) "same `mountOrder`"
+        (volumeWith (sharedState // { plugins.mountOrder = 0; }));
+
+    "shared state refuses duplicate and escaping subpaths" =
+      failsWithUsing (mkVolumeEnv catalogueVolumeNameOf) "same subPath"
+        (volumeWith (sharedState // { plugins.subPath = "userfiles"; }))
+      && failsWithUsing (mkVolumeEnv catalogueVolumeNameOf) "unsafe `subPath`"
+        (volumeWith (sharedState // { plugins.subPath = "../plugins"; }));
 
     "entries from two roots reach the app grammar" =
       cfg.nixmulti.renderedByGrammar == [ "agent" "web" ]

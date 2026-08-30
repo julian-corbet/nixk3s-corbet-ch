@@ -355,6 +355,22 @@ let
   # same resolver below.
   volumeNameOf = x: key: x.spec.volumeNameOf x key;
 
+  # A declaration may keep several catalogue directories as subdirectories of ONE physical
+  # backing. `sharedWith` names the catalogue key that owns that backing; it is deliberately a
+  # single hop, so following it never becomes graph traversal during evaluation. Invalid targets
+  # remain total here and are refused below with a useful sentence.
+  sharedWithOf = w: key: w.state.${key}.sharedWith or null;
+  backingKeyOf = w: key:
+    let target = sharedWithOf w key; in
+    if target != null
+      && w.state ? ${target}
+      && (sharedWithOf w target) == null
+    then target
+    else key;
+  physicalStateKeys = w:
+    lib.filter (key: sharedWithOf w key == null) (lib.attrNames w.state);
+  renderedVolumeNameOf = x: key: volumeNameOf x (backingKeyOf x.w key);
+
   # KEYS BOTH SIDES KNOW ABOUT. The guard that catches a directory only one side has is a state
   # assertion; every use of the catalogue that indexes it BY A DECLARATION'S KEY must walk the
   # intersection instead, or it throws a missing-attribute error while the assertion written to
@@ -385,15 +401,47 @@ let
       (if backing.emptyDir or false then "emptyDir" else null)
     ] ++ [ null ]);
 
+  joinSubPath = outer: inner:
+    if outer == null then inner
+    else if inner == null then outer
+    else "${outer}/${inner}";
+
+  stateMountsFor = entry: w: key:
+    let
+      declaration = w.state.${key};
+      ro = entryReadOnly entry.state.${key};
+      ro' = if ro != null then ro else declaration.readOnly or false;
+    in
+    map
+      (m: {
+        inherit (m) mountPath;
+        subPath = joinSubPath (declaration.subPath or null) (m.subPath or null);
+        readOnly = m.readOnly or ro';
+      })
+      (mountsOfEntry entry.state.${key});
+
   stateOf = x@{ entry, w, ... }:
-    lib.mapAttrs'
-      (key: backing:
-        let ro = entryReadOnly entry.state.${key}; in
+    let
+      known = sharedStateKeys entry w;
+      roots = lib.filter (key: lib.elem key known) (physicalStateKeys w);
+      membersOf = root:
         let
-          ms = mountsOfEntry entry.state.${key};
-          ro' = if ro != null then ro else backing.readOnly or false;
+          members = lib.filter (key: backingKeyOf w key == root) known;
+          orderOf = key:
+            let order = w.state.${key}.mountOrder or null; in
+            if order == null then 0 else order;
         in
-        lib.nameValuePair (volumeNameOf x key) (
+        lib.sort (a: b: orderOf a < orderOf b) members;
+    in
+    lib.listToAttrs (map
+      (root:
+        let
+          backing = w.state.${root};
+          members = membersOf root;
+          ms = lib.concatMap (stateMountsFor entry w) members;
+          onePlainMount = lib.length ms == 1 && (lib.head ms).subPath == null;
+        in
+        lib.nameValuePair (volumeNameOf x root) (
           {
             claim = backing.claim or null;
             hostPath = backing.hostPath or null;
@@ -403,16 +451,13 @@ let
             emptyDir = backing.emptyDir or false;
             ownership = backing.ownership or "site-curated";
           }
-          # `mountPath` and `mounts` are alternatives in the grammar, not a pair.
-          // (if lib.length ms == 1
-          then { mountPath = (lib.head ms).mountPath; readOnly = ro'; }
-          else {
-            mounts = map
-              (m: { inherit (m) mountPath; subPath = m.subPath or null; readOnly = m.readOnly or ro'; })
-              ms;
-          })
+          # `mountPath` and `mounts` are alternatives in the grammar, not a pair. A subPath needs
+          # the list form even when there is only one mount.
+          // (if onePlainMount
+          then { mountPath = (lib.head ms).mountPath; readOnly = (lib.head ms).readOnly; }
+          else { mounts = ms; })
         ))
-      (lib.getAttrs (sharedStateKeys entry w) w.state);
+      roots);
 
   # The same split, for probes. The catalogue decides WHICH probes exist and WHAT THEY ASK FOR —
   # the endpoint, the port, and how long one answer may take, which is a property of the software
@@ -530,7 +575,19 @@ let
   # mounting a volume the app no longer declares is refused by the grammar, not here.
   remapMounts = x@{ spec, w, ... }: ms:
     if usesCommonOption spec "state" then
-      lib.mapAttrs' (k: v: lib.nameValuePair (if w.state ? ${k} then volumeNameOf x k else k) v) ms
+      lib.foldl'
+        (acc: key:
+          let
+            declared = w.state ? ${key};
+            volume = if declared then renderedVolumeNameOf x key else key;
+            prefix = if declared then w.state.${key}.subPath or null else null;
+            mounts = map
+              (m: m // { subPath = joinSubPath prefix (m.subPath or null); })
+              ms.${key};
+          in
+          acc // { ${volume} = (acc.${volume} or [ ]) ++ mounts; })
+        { }
+        (lib.attrNames ms)
     else
       ms;
 
@@ -757,6 +814,57 @@ let
         forbidden = lib.filter
           (key: lib.elem key catalogued && !(lib.elem key allowed))
           declared;
+        shared = lib.filter (key: (sharedWithOf w key) != null) declared;
+        badTargets = lib.filter
+          (key:
+            let target = sharedWithOf w key; in
+            target == key
+            || !(lib.elem target declared)
+            || (lib.elem target declared && (sharedWithOf w target) != null))
+          shared;
+        physical = physicalStateKeys w;
+        membersOf = root: lib.filter (key: backingKeyOf w key == root) declared;
+        sharedGroups = lib.filter (root: lib.length (membersOf root) > 1) physical;
+        incompleteGroups = lib.filter
+          (root: lib.any
+            (key:
+              (w.state.${key}.subPath or null) == null
+              || (w.state.${key}.mountOrder or null) == null)
+            (membersOf root))
+          sharedGroups;
+        completeGroups = lib.filter (root: !(lib.elem root incompleteGroups)) sharedGroups;
+        duplicateSubPaths = lib.filter
+          (root:
+            let paths = map (key: w.state.${key}.subPath) (membersOf root); in
+            lib.length paths != lib.length (lib.unique paths))
+          completeGroups;
+        duplicateMountOrders = lib.filter
+          (root:
+            let orders = map (key: w.state.${key}.mountOrder) (membersOf root); in
+            lib.length orders != lib.length (lib.unique orders))
+          completeGroups;
+        cleanSubPath = path:
+          path != ""
+          && !(lib.hasPrefix "/" path)
+          && lib.all (part: part != "" && part != "." && part != "..") (lib.splitString "/" path);
+        badSubPaths = lib.filter
+          (key:
+            let path = w.state.${key}.subPath or null; in
+            path != null && !(cleanSubPath path))
+          declared;
+        sharedWithPhysicalFields = lib.filter
+          (key:
+            let backing = w.state.${key}; in
+            lib.any (b: b) [
+              ((backing.claim or null) != null)
+              ((backing.hostPath or null) != null)
+              ((backing.configMap or null) != null)
+              ((backing.secret or null) != null)
+              (backing.emptyDir or false)
+              ((backing.volumeName or null) != null)
+              ((backing.ownership or "site-curated") != "site-curated")
+            ])
+          shared;
         showKeys = keys: lib.concatMapStringsSep ", " (key: "`${key}`") keys;
       in
       [
@@ -805,7 +913,7 @@ let
                 ((backing.secret or null) != null)
                 (backing.emptyDir or false)
               ]) == 1)
-            (lib.attrValues w.state);
+            (map (key: w.state.${key}) physical);
           message =
             "${namespace}: workload `${name}` must back each directory with EXACTLY ONE of a claim, "
             + "a node path, a ConfigMap, a Secret or a scratch directory -- never several and never "
@@ -813,10 +921,52 @@ let
             + "exactly the restart that state exists to survive.";
         }
         {
-          # A rename is per directory; two of them landing on one name is one volume where the
-          # declaration says two, and the second silently wins.
+          assertion = badTargets == [ ];
+          message =
+            "${namespace}: workload `${name}` shares ${showKeys badTargets} with an unknown, "
+            + "self-referential, or itself-shared state key. `sharedWith` must point directly to "
+            + "one declared catalogue key that owns the physical backing.";
+        }
+        {
+          assertion = sharedWithPhysicalFields == [ ];
+          message =
+            "${namespace}: workload `${name}` gives ${showKeys sharedWithPhysicalFields} both a "
+            + "`sharedWith` target and physical volume properties. Only the target owns the "
+            + "backing, volume name and ownership; the shared key owns its mount subPath.";
+        }
+        {
+          assertion = incompleteGroups == [ ];
+          message =
+            "${namespace}: workload `${name}` shares a physical volume without giving every "
+            + "member both `subPath` and `mountOrder`. Both are required so no mount exposes the "
+            + "backing root and a live pod's mount order can be preserved exactly.";
+        }
+        {
+          assertion = duplicateSubPaths == [ ];
+          message =
+            "${namespace}: workload `${name}` maps two catalogue directories onto the same "
+            + "subPath of one physical volume. One directory would silently contain the other's "
+            + "data.";
+        }
+        {
+          assertion = duplicateMountOrders == [ ];
+          message =
+            "${namespace}: workload `${name}` gives two directories on one physical volume the "
+            + "same `mountOrder`. Their rendered order would then depend on attribute names rather "
+            + "than on the declaration.";
+        }
+        {
+          assertion = badSubPaths == [ ];
+          message =
+            "${namespace}: workload `${name}` gives ${showKeys badSubPaths} an unsafe `subPath`. "
+            + "A subPath is relative to its backing and may contain neither empty, `.` nor `..` "
+            + "segments.";
+        }
+        {
+          # A rename is per PHYSICAL volume. Shared semantic directories intentionally resolve to
+          # one name; two physical roots doing so still means one silently wins.
           assertion =
-            let names = map (k: volumeNameOf x k) (lib.attrNames w.state); in
+            let names = map (k: volumeNameOf x k) physical; in
             lib.length (lib.unique names) == lib.length names;
           message =
             "${namespace}: workload `${name}` renames two directories onto one volume name. One of "
@@ -828,7 +978,7 @@ let
           # than merely discouraged.
           assertion = lib.all
             (key:
-              let chosen = backingChosen w.state.${key}; in
+              let chosen = backingChosen w.state.${backingKeyOf w key}; in
               chosen == null || lib.elem chosen (backingsAllowed entry key))
             (sharedStateKeys entry w);
           message =
@@ -844,7 +994,7 @@ let
           assertion = lib.all
             (key:
               !((entry.state.${key}.grows or false)
-                && (w.state.${key}.ownership or "site-curated") == "kubelet"))
+                && (w.state.${backingKeyOf w key}.ownership or "site-curated") == "kubelet"))
             (sharedStateKeys entry w);
           message =
             "${namespace}: workload `${name}` asks the kubelet to own a directory the catalogue says "
@@ -1085,8 +1235,9 @@ let
             (inner:
               lib.optional
                 (outer != inner
+                  && backingKeyOf w outer != backingKeyOf w inner
                   && nests outer inner
-                  && volumeNameOf x inner < volumeNameOf x outer)
+                  && renderedVolumeNameOf x inner < renderedVolumeNameOf x outer)
                 { inherit outer inner; })
             keys)
           keys;
@@ -1127,9 +1278,10 @@ let
             (inner:
               lib.optional
                 (outer != inner
+                  && backingKeyOf w outer != backingKeyOf w inner
                   && nests outer inner
                   && !(inner < outer)
-                  && volumeNameOf x inner < volumeNameOf x outer)
+                  && renderedVolumeNameOf x inner < renderedVolumeNameOf x outer)
                 { inherit outer inner; })
             keys)
           keys;
@@ -1139,7 +1291,7 @@ let
           when = true;
           message =
             "${namespace}: workload `${name}` renames `${c.inner}` to "
-            + "`${volumeNameOf x c.inner}`, which now sorts before `${volumeNameOf x c.outer}` -- "
+            + "`${renderedVolumeNameOf x c.inner}`, which now sorts before `${renderedVolumeNameOf x c.outer}` -- "
             + "the volume covering it at ${pathOf c.outer}. Mounts render in that order, so the "
             + "outer one is laid over the inner and its data stops being visible. The names are "
             + "presumably what the live objects already carry, which is why this is not refused.";
@@ -1263,7 +1415,7 @@ let
     (x:
       let
         inherit (x) name w;
-        bad = lib.filter (k: !(isDnsLabel (volumeNameOf x k))) (lib.attrNames w.state);
+        bad = lib.filter (k: !(isDnsLabel (volumeNameOf x k))) (physicalStateKeys w);
       in
       [{
         assertion = bad == [ ];
@@ -1669,6 +1821,33 @@ let
         description = ''
           Whether the mount is read-only. A catalogue that states read-only for a directory wins
           over this, because "this software only ever reads it" is knowledge rather than a choice.
+        '';
+      };
+      sharedWith = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        description = ''
+          Another catalogue state key whose PHYSICAL backing this directory shares. The target
+          must own exactly one backing and may not itself share another key. Every member of a
+          shared volume must state a distinct `subPath` and `mountOrder`.
+        '';
+      };
+      subPath = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        description = ''
+          The relative directory within the physical backing mounted at this catalogue path.
+          Required for every member of a shared volume; absolute paths and `.`/`..` segments are
+          refused.
+        '';
+      };
+      mountOrder = lib.mkOption {
+        type = lib.types.nullOr lib.types.ints.unsigned;
+        default = null;
+        description = ''
+          This directory's position in the rendered mount list when several catalogue paths share
+          one backing. Required and unique within that volume so adoption can preserve an existing
+          pod's list exactly instead of inheriting attribute-name order.
         '';
       };
     };

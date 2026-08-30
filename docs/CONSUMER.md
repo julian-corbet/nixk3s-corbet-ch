@@ -188,6 +188,13 @@ callback that needs to distinguish a structurally absent option must therefore i
 `consumer` is how a root derives wiring from a declared peer without copying its namespace or
 service name into a second declaration.
 
+Several semantic state keys may use one physical volume without collapsing the catalogue's
+knowledge of their container paths. The key that owns the claim, host path, ConfigMap, Secret, or
+emptyDir is declared normally. Each additional key sets `sharedWith` to that owner. Every member,
+including the owner, then gives a distinct relative `subPath` and a unique `mountOrder`; the latter
+keeps an adoption's rendered mount list deterministic. Shared members may set `readOnly`, which is
+a mount property, but may not repeat physical backing, ownership, or volume-name fields.
+
 The shared `${platformOption}.namespace` option exists only when at least one root exposes the
 common per-workload `namespace` term. If every root removes that term and derives its namespace
 from category/side/plane fields, the factory does not invent a singular required platform
